@@ -1,5 +1,5 @@
 """
-File Mover Service — Phase 1.5 / 1.6.
+File Mover Service — Phase 1.5 / 1.6 / 2A.
 
 Replicates the behavior of move_rts1.bat:
 
@@ -14,6 +14,7 @@ Rules:
   separated by file_mover_stability_check_seconds (double-check guard).
   This catches disk-lag scenarios where the mtime has stopped updating but
   the file is still being written (e.g. buffered I/O on slow storage).
+- Phase 2A: after moving a file, register it in the recording manifest and DB.
 - Destination directory is created if it doesn't exist.
 - Each moved file is logged.
 - Errors on individual files are logged but do not abort the whole run.
@@ -61,19 +62,20 @@ def _move_completed_files(
     chunks_dir: Path,
     min_age_seconds: float,
     stability_check_seconds: float,
-) -> int:
+) -> list[Path]:
     """
     Move all *.mp4 files from *record_dir* that pass both the age check and
     the double-read size-stability check into *chunks_dir*.
 
-    Returns the number of files successfully moved.
+    Returns the list of destination paths for successfully moved files
+    (used by the caller to trigger manifest registration).
     """
     if not record_dir.exists():
-        return 0
+        return []
 
     chunks_dir.mkdir(parents=True, exist_ok=True)
 
-    moved = 0
+    moved: list[Path] = []
     now = time.time()
 
     for src in list(record_dir.glob("*.mp4")):
@@ -110,7 +112,7 @@ def _move_completed_files(
         try:
             shutil.move(str(src), str(dest))
             logger.info("[file_mover] Moved %s → %s", src, dest)
-            moved += 1
+            moved.append(dest)
         except OSError as exc:
             logger.error("[file_mover] Failed to move %s: %s", src, exc)
 
@@ -122,7 +124,10 @@ def _run_file_mover_sync() -> None:
     Iterate all channels and move completed files.
 
     Called via asyncio.to_thread so file I/O doesn't block the event loop.
+    After each successful move, the segment is registered in the manifest (Phase 2A).
     """
+    from .manifest_service import register_segment  # local import to avoid circular deps
+
     settings = get_settings()
     min_age = float(settings.file_mover_min_age_seconds)
     stability = float(settings.file_mover_stability_check_seconds)
@@ -136,8 +141,17 @@ def _run_file_mover_sync() -> None:
                 config = ChannelConfig.model_validate_json(ch.config_json)
                 record_dir = Path(config.paths.record_dir)
                 chunks_dir = Path(config.paths.chunks_dir)
-                moved = _move_completed_files(record_dir, chunks_dir, min_age, stability)
-                total_moved += moved
+                moved_paths = _move_completed_files(record_dir, chunks_dir, min_age, stability)
+                total_moved += len(moved_paths)
+                # Phase 2A: register each moved segment in manifest + DB
+                for dest_path in moved_paths:
+                    try:
+                        register_segment(ch.id, dest_path, config, db)
+                    except Exception:
+                        logger.exception(
+                            "[file_mover][%s] Manifest registration failed for '%s'.",
+                            ch.id, dest_path.name,
+                        )
             except Exception:
                 logger.exception("[file_mover][%s] Error processing channel.", ch.id)
 

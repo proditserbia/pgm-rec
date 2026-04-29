@@ -65,6 +65,15 @@ class Settings(BaseSettings):
     # Maximum number of log files to keep per channel (oldest are deleted)
     log_max_files_per_channel: int = 30
 
+    # Phase 2A — Recording Manifest & Export Index Layer
+    # Root directory for per-channel daily JSON manifests
+    manifests_dir: Path = _BASE_DIR / "data" / "manifests"
+    # IANA timezone name used when interpreting segment filenames (the recording
+    # machine's local clock is assumed to be in this timezone).
+    manifest_timezone: str = "Europe/Belgrade"
+    # Gaps smaller than this threshold (seconds) are silently ignored.
+    manifest_gap_tolerance_seconds: float = 10.0
+
 
 _settings: Settings | None = None
 

@@ -109,6 +109,9 @@ class ChannelConfig(BaseModel):
     display_name: str        # Human label, e.g. "RTS1 - PRVI PROGRAM"
     enabled: bool = True
     ffmpeg_path: str = "ffmpeg"   # Full path or executable name on PATH
+    # IANA timezone name for the recording machine's local clock.
+    # Used when interpreting segment filenames and writing manifests.
+    timezone: str = "Europe/Belgrade"
 
     capture: CaptureConfig = Field(default_factory=CaptureConfig)
     encoding: EncodingConfig = Field(default_factory=EncodingConfig)
@@ -272,3 +275,89 @@ class PreviewStatusResponse(BaseModel):
     started_at: Optional[datetime] = None
     stream_url: Optional[str] = None
     health: PreviewHealth = PreviewHealth.UNKNOWN
+
+
+# ─── Manifest / Export Index models — Phase 2A ───────────────────────────────
+
+class SegmentStatus(str, Enum):
+    COMPLETE = "complete"
+    PARTIAL = "partial"
+    ERROR = "error"
+
+
+class SegmentEntry(BaseModel):
+    """One recorded segment as stored in the daily JSON manifest and DB."""
+
+    filename: str
+    path: str
+    start_time: datetime
+    end_time: datetime
+    duration_seconds: float
+    size_bytes: int
+    status: SegmentStatus = SegmentStatus.COMPLETE
+    created_at: datetime
+    ffprobe_verified: bool = False
+
+
+class GapEntry(BaseModel):
+    """A detected gap between two consecutive segments."""
+
+    gap_start: datetime
+    gap_end: datetime
+    gap_seconds: float
+
+
+class DailyManifest(BaseModel):
+    """
+    Per-channel, per-day recording manifest (JSON source of truth).
+
+    Written to: data/manifests/{channel_id}/{YYYY-MM-DD}.json
+
+    Human-readable and hand-repairable.  The DB indexes the same data for
+    fast API queries; the JSON file is always canonical.
+    """
+
+    channel_id: str
+    date: str               # YYYY-MM-DD in the channel's local timezone
+    timezone: str           # IANA timezone name
+    segment_duration_target: int  # seconds (normally 300 = 5 min)
+    segments: list[SegmentEntry] = Field(default_factory=list)
+    gaps: list[GapEntry] = Field(default_factory=list)
+    updated_at: datetime
+
+
+class ResolveRangeRequest(BaseModel):
+    """Input to the export range resolver."""
+
+    date: str      # YYYY-MM-DD
+    in_time: str   # HH:MM:SS
+    out_time: str  # HH:MM:SS
+
+
+class SegmentSlice(BaseModel):
+    """A segment reference returned by the export range resolver."""
+
+    filename: str
+    path: str
+    start_time: datetime
+    end_time: datetime
+    duration_seconds: float
+
+
+class ResolveRangeResponse(BaseModel):
+    """
+    Result of resolving an export time range.
+
+    Tells the caller exactly which segment files are needed, where to trim
+    the first and last segments, and whether there are any gaps.
+    """
+
+    channel_id: str
+    date: str
+    in_time: str
+    out_time: str
+    segments: list[SegmentSlice]
+    first_segment_offset_seconds: float
+    export_duration_seconds: float
+    has_gaps: bool
+    gaps: list[GapEntry]

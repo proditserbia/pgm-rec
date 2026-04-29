@@ -2,11 +2,11 @@
 PGMRec — Program Recorder System
 FastAPI application entry point.
 
-Phase 2: multi-channel support + preview foundation.
-  - 4 channels: rts1, rts2, rts3, rts_test (loaded from data/channels/*.json)
-  - Preview process per channel (isolated from recording)
-  - Preview control API: start/stop/status/stream
-  - Preview watchdog (light — marks DOWN, no auto-restart)
+Phase 2A: Recording Manifest & Export Index Layer.
+  - Per-channel daily JSON manifests (data/manifests/{id}/{YYYY-MM-DD}.json)
+  - Segment registration triggered by file_mover (ffprobe + gap detection)
+  - DB index: SegmentRecord + ManifestGap tables
+  - Manifest API: GET /manifests/{date}, GET /segments, POST /exports/resolve-range
 """
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ from .services.retention import run_retention
 from .services.scheduler import get_scheduler
 from .services.watchdog import run_watchdog_loop
 from .api.v1 import channels as channels_router
+from .api.v1 import manifests as manifests_router
 from .api.v1 import monitoring as monitoring_router
 from .api.v1 import preview as preview_router
 
@@ -85,7 +86,7 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
 
     # Ensure required directories exist
-    for directory in (settings.data_dir, settings.logs_dir, settings.channels_config_dir):
+    for directory in (settings.data_dir, settings.logs_dir, settings.channels_config_dir, settings.manifests_dir):
         directory.mkdir(parents=True, exist_ok=True)
 
     # Create DB tables (idempotent — safe on every restart)
@@ -175,6 +176,7 @@ def create_app() -> FastAPI:
     app.include_router(channels_router.router, prefix="/api/v1")
     app.include_router(monitoring_router.router, prefix="/api/v1")
     app.include_router(preview_router.router, prefix="/api/v1")
+    app.include_router(manifests_router.router, prefix="/api/v1")
 
     @app.get("/health", tags=["system"])
     def health():

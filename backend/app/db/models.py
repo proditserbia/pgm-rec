@@ -1,7 +1,7 @@
 """SQLAlchemy ORM models for PGMRec."""
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -36,6 +36,12 @@ class Channel(Base):
     )
     segment_anomalies: Mapped[list["SegmentAnomaly"]] = relationship(
         back_populates="channel", cascade="all, delete-orphan", order_by="SegmentAnomaly.id"
+    )
+    segment_records: Mapped[list["SegmentRecord"]] = relationship(
+        back_populates="channel", cascade="all, delete-orphan", order_by="SegmentRecord.start_time"
+    )
+    manifest_gaps: Mapped[list["ManifestGap"]] = relationship(
+        back_populates="channel", cascade="all, delete-orphan", order_by="ManifestGap.gap_start"
     )
 
 
@@ -105,3 +111,63 @@ class SegmentAnomaly(Base):
     resolved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     channel: Mapped["Channel"] = relationship(back_populates="segment_anomalies")
+
+
+class SegmentRecord(Base):
+    """
+    Index record for one completed recording segment — Phase 2A.
+
+    Mirrors the segment entries in the per-channel daily JSON manifest.
+    The JSON manifest is the source of truth; this table enables fast API
+    queries without reading files from disk.
+
+    Unique constraint: (channel_id, filename) — one row per segment file.
+    """
+
+    __tablename__ = "segment_records"
+    __table_args__ = (
+        UniqueConstraint("channel_id", "filename", name="uq_segment_channel_filename"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    channel_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("channels.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    filename: Mapped[str] = mapped_column(String(256), nullable=False)
+    path: Mapped[str] = mapped_column(Text, nullable=False)
+    # Both stored as UTC datetime objects
+    start_time: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    end_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    duration_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    # "complete" | "partial" | "error"
+    status: Mapped[str] = mapped_column(String(32), default="complete", nullable=False)
+    ffprobe_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # YYYY-MM-DD string in the channel's local timezone (for manifest partitioning)
+    manifest_date: Mapped[str] = mapped_column(String(10), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+
+    channel: Mapped["Channel"] = relationship(back_populates="segment_records")
+
+
+class ManifestGap(Base):
+    """
+    A detected gap between two consecutive recording segments — Phase 2A.
+
+    Created when the time between seg[n].end_time and seg[n+1].start_time
+    exceeds manifest_gap_tolerance_seconds.
+    """
+
+    __tablename__ = "manifest_gaps"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    channel_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("channels.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    manifest_date: Mapped[str] = mapped_column(String(10), nullable=False, index=True)
+    gap_start: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    gap_end: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    gap_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+
+    channel: Mapped["Channel"] = relationship(back_populates="manifest_gaps")
