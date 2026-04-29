@@ -274,7 +274,9 @@ class ProcessManager:
 
         logger.info("[%s] Starting FFmpeg: %s", channel_id, format_command_for_log(cmd))
 
-        # Open log in binary-append mode for subprocess stderr
+        # Open log in binary-append mode for subprocess stderr.
+        # The file handle is always closed in the finally block; the subprocess
+        # retains its own copy of the descriptor and continues writing to it.
         log_fh = open(log_path, "ab")  # noqa: WPS515
         try:
             extra: dict = {}
@@ -287,11 +289,8 @@ class ProcessManager:
                 stderr=log_fh,
                 **extra,
             )
-        except Exception:
-            log_fh.close()
-            raise
         finally:
-            # Parent no longer needs the handle; subprocess retains its own copy
+            # Always close the parent's copy — subprocess keeps its own fd.
             log_fh.close()
 
         started_at = datetime.now(timezone.utc)

@@ -1,13 +1,12 @@
 """SQLAlchemy ORM models for PGMRec."""
 from datetime import datetime, timezone
 
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
-
-
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
