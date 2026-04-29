@@ -4,10 +4,14 @@ Monitoring API — v1.
 Endpoints:
   GET /api/v1/channels/{id}/watchdog      recent watchdog events + health
   GET /api/v1/channels/{id}/anomalies     segment anomaly history
+  GET /api/v1/channels/{id}/debug         detailed real-time diagnostics (Phase 1.6)
   GET /api/v1/system/health               aggregated health of all channels
 """
 from __future__ import annotations
 
+import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -16,6 +20,7 @@ from sqlalchemy.orm import Session
 from ...db.models import Channel, SegmentAnomaly, WatchdogEvent
 from ...db.session import get_db
 from ...models.schemas import (
+    ChannelDebugResponse,
     ChannelHealthResponse,
     HealthStatus,
     ProcessStatus,
@@ -68,6 +73,21 @@ def _channel_health_response(ch: Channel, db: Session) -> ChannelHealthResponse:
     )
 
 
+def _newest_mp4_mtime(record_dir: str) -> datetime | None:
+    """Return the mtime of the newest *.mp4 in *record_dir* as a UTC datetime."""
+    d = Path(record_dir)
+    if not d.exists():
+        return None
+    try:
+        mp4s = list(d.glob("*.mp4"))
+        if not mp4s:
+            return None
+        mtime = max(f.stat().st_mtime for f in mp4s)
+        return datetime.fromtimestamp(mtime, tz=timezone.utc)
+    except OSError:
+        return None
+
+
 # ─── Routes ───────────────────────────────────────────────────────────────────
 
 @router.get("/channels/{channel_id}/watchdog", response_model=ChannelHealthResponse)
@@ -113,6 +133,39 @@ def get_segment_anomalies(
     ]
 
 
+@router.get("/channels/{channel_id}/debug", response_model=ChannelDebugResponse)
+def get_channel_debug(channel_id: str, db: DbDep):
+    """
+    Detailed real-time diagnostics for a channel — Phase 1.6.
+
+    Exposes: health, restart history, cooldown state, stall tracking,
+    last segment time (derived from newest mp4 mtime in 1_record).
+    """
+    from ...models.schemas import ChannelConfig
+    ch = _get_channel_or_404(channel_id, db)
+    pm = get_process_manager()
+
+    # Derive last_segment_time from the filesystem (independent of stall state)
+    config = ChannelConfig.model_validate_json(ch.config_json)
+    last_segment_time = _newest_mp4_mtime(config.paths.record_dir)
+
+    # Stall info
+    stall_secs = pm.get_stall_seconds(channel_id)
+
+    return ChannelDebugResponse(
+        channel_id=ch.id,
+        health=pm.get_health(ch.id),
+        pid=pm.get_pid(ch.id),
+        last_restart_time=pm.get_last_restart_time(ch.id),
+        restart_count_window=pm.get_restart_count_window(ch.id),
+        cooldown_remaining_seconds=pm.get_cooldown_remaining(ch.id),
+        last_segment_time=last_segment_time,
+        last_file_size=pm.get_last_file_size(ch.id),
+        last_file_size_change_at=pm.get_last_file_size_change_at(ch.id),
+        stall_seconds=stall_secs,
+    )
+
+
 @router.get("/system/health", response_model=SystemHealthResponse)
 def get_system_health(db: DbDep):
     """Aggregated health summary for all channels."""
@@ -124,6 +177,8 @@ def get_system_health(db: DbDep):
     running = sum(1 for r in channel_responses if r.status == ProcessStatus.RUNNING)
     healthy = sum(1 for r in channel_responses if r.health == HealthStatus.HEALTHY)
     unhealthy = sum(1 for r in channel_responses if r.health == HealthStatus.UNHEALTHY)
+    degraded = sum(1 for r in channel_responses if r.health == HealthStatus.DEGRADED)
+    cooldown = sum(1 for r in channel_responses if r.health == HealthStatus.COOLDOWN)
     unknown = sum(1 for r in channel_responses if r.health == HealthStatus.UNKNOWN)
 
     return SystemHealthResponse(
@@ -132,5 +187,7 @@ def get_system_health(db: DbDep):
         running=running,
         healthy=healthy,
         unhealthy=unhealthy,
+        degraded=degraded,
+        cooldown=cooldown,
         unknown=unknown,
     )

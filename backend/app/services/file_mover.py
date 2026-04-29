@@ -1,5 +1,5 @@
 """
-File Mover Service — Phase 1.5.
+File Mover Service — Phase 1.5 / 1.6.
 
 Replicates the behavior of move_rts1.bat:
 
@@ -9,10 +9,11 @@ Replicates the behavior of move_rts1.bat:
 Rules:
 - Runs on a configurable interval (default 30 s).
 - Only moves files that are "complete" — not currently being written by FFmpeg.
-- A file is considered complete when it has not been modified for at least
-  file_mover_min_age_seconds (default 30 s).
-  This is the portable, cross-platform equivalent of checking whether a file
-  is locked (no need for OS-specific locking APIs).
+- Phase 1.5: a file must be at least file_mover_min_age_seconds old.
+- Phase 1.6: additionally, the file size must be stable across two reads
+  separated by file_mover_stability_check_seconds (double-check guard).
+  This catches disk-lag scenarios where the mtime has stopped updating but
+  the file is still being written (e.g. buffered I/O on slow storage).
 - Destination directory is created if it doesn't exist.
 - Each moved file is logged.
 - Errors on individual files are logged but do not abort the whole run.
@@ -33,14 +34,37 @@ from ..models.schemas import ChannelConfig
 logger = logging.getLogger(__name__)
 
 
+def _is_size_stable(path: Path, check_interval: float) -> bool:
+    """
+    Read *path*'s size twice, separated by *check_interval* seconds.
+
+    Returns True only if:
+    - Both reads succeed.
+    - The file is non-empty.
+    - The size is identical in both readings.
+
+    Running in a thread pool (via asyncio.to_thread) so the sleep here is fine.
+    """
+    try:
+        size1 = path.stat().st_size
+        if size1 == 0:
+            return False
+        time.sleep(check_interval)
+        size2 = path.stat().st_size
+        return size1 == size2
+    except OSError:
+        return False
+
+
 def _move_completed_files(
     record_dir: Path,
     chunks_dir: Path,
     min_age_seconds: float,
+    stability_check_seconds: float,
 ) -> int:
     """
-    Move all *.mp4 files from *record_dir* that are older than *min_age_seconds*
-    into *chunks_dir*.
+    Move all *.mp4 files from *record_dir* that pass both the age check and
+    the double-read size-stability check into *chunks_dir*.
 
     Returns the number of files successfully moved.
     """
@@ -58,11 +82,19 @@ def _move_completed_files(
         except OSError:
             continue  # file disappeared between glob and stat — skip
 
+        # Age guard (Phase 1.5)
         age = now - stat.st_mtime
         if age < min_age_seconds:
             logger.debug(
                 "[file_mover] Skipping %s — too recent (age=%.1fs < %.1fs).",
                 src.name, age, min_age_seconds,
+            )
+            continue
+
+        # Size-stability double-check (Phase 1.6)
+        if not _is_size_stable(src, stability_check_seconds):
+            logger.debug(
+                "[file_mover] Skipping %s — size not stable yet.", src.name
             )
             continue
 
@@ -93,6 +125,7 @@ def _run_file_mover_sync() -> None:
     """
     settings = get_settings()
     min_age = float(settings.file_mover_min_age_seconds)
+    stability = float(settings.file_mover_stability_check_seconds)
     SessionLocal = get_session_factory()
     total_moved = 0
 
@@ -103,7 +136,7 @@ def _run_file_mover_sync() -> None:
                 config = ChannelConfig.model_validate_json(ch.config_json)
                 record_dir = Path(config.paths.record_dir)
                 chunks_dir = Path(config.paths.chunks_dir)
-                moved = _move_completed_files(record_dir, chunks_dir, min_age)
+                moved = _move_completed_files(record_dir, chunks_dir, min_age, stability)
                 total_moved += moved
             except Exception:
                 logger.exception("[file_mover][%s] Error processing channel.", ch.id)

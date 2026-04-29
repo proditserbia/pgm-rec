@@ -2,14 +2,17 @@
 PGMRec — Program Recorder System
 FastAPI application entry point.
 
-Phase 1.5: recording reliability layer.
-  - Recording watchdog (process alive + file output monitoring, auto-restart)
-  - File mover (1_record → 2_chunks)
-  - Retention cleaner (delete old files from 3_final)
-  - Improved process manager (adopt orphaned PIDs, track last_seen_alive)
+Phase 1.6: advanced reliability and failure protection.
+  - Watchdog runs as an independent asyncio Task (not via shared scheduler)
+  - Stall detection (file size growth tracking)
+  - Restart backoff / COOLDOWN state
+  - DEGRADED / COOLDOWN health states
+  - Safe file mover (double size-stability check)
+  - Debug endpoint: GET /api/v1/channels/{id}/debug
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -24,7 +27,7 @@ from .services.file_mover import run_file_mover
 from .services.process_manager import get_process_manager
 from .services.retention import run_retention
 from .services.scheduler import get_scheduler
-from .services.watchdog import run_watchdog
+from .services.watchdog import run_watchdog_loop
 from .api.v1 import channels as channels_router
 from .api.v1 import monitoring as monitoring_router
 
@@ -42,8 +45,7 @@ def _seed_channels(db) -> None:
     On first startup, load *.json files from data/channels/ and insert any
     channels not yet in the DB.
 
-    Safe to run repeatedly — existing records are never overwritten, so operator
-    customisations made via the API (future) are preserved.
+    Safe to run repeatedly — existing records are never overwritten.
     """
     settings = get_settings()
     cfg_dir = settings.channels_config_dir
@@ -100,13 +102,15 @@ async def lifespan(app: FastAPI):
     with SessionLocal() as db:
         get_process_manager().reconcile_on_startup(db)
 
-    # Register and start background scheduler jobs
-    scheduler = get_scheduler()
-    scheduler.add(
-        "watchdog",
-        settings.watchdog_interval_seconds,
-        run_watchdog,
+    # ── Watchdog — independent asyncio Task ───────────────────────────────
+    # Runs its own interval loop, completely decoupled from the shared
+    # scheduler, so it is never delayed by file_mover or retention work.
+    watchdog_task = asyncio.create_task(
+        run_watchdog_loop(), name="pgmrec-watchdog"
     )
+
+    # ── Shared scheduler: file mover + retention ─────────────────────────
+    scheduler = get_scheduler()
     scheduler.add(
         "file_mover",
         settings.file_mover_interval_seconds,
@@ -122,6 +126,13 @@ async def lifespan(app: FastAPI):
     logger.info("PGMRec %s ready.", settings.app_version)
     yield
 
+    # Graceful shutdown
+    watchdog_task.cancel()
+    try:
+        await watchdog_task
+    except asyncio.CancelledError:
+        pass
+
     await scheduler.stop()
     logger.info("PGMRec shutting down.")
 
@@ -136,7 +147,7 @@ def create_app() -> FastAPI:
         version=settings.app_version,
         description=(
             "Broadcast-grade recording and compliance system. "
-            "Phase 1.5: recording reliability layer."
+            "Phase 1.6: advanced reliability and failure protection."
         ),
         lifespan=lifespan,
     )

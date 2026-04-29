@@ -34,11 +34,29 @@ class Settings(BaseSettings):
     # Grace period added on top of segment_time before declaring stale output
     watchdog_segment_tolerance_seconds: int = 30
 
+    # Phase 1.6 — FFmpeg hang / stall detection
+    # If the newest segment file's size hasn't grown for this many seconds, the
+    # recording is considered stalled (process alive but producing no output).
+    stall_detection_seconds: int = 60
+
+    # Phase 1.6 — Restart backoff / cooldown
+    # Maximum auto-restarts allowed within restart_backoff_window_seconds before
+    # the channel enters COOLDOWN and auto-restart is temporarily disabled.
+    restart_backoff_max_restarts: int = 5
+    # Sliding window (seconds) within which restarts are counted.
+    restart_backoff_window_seconds: int = 300   # 5 minutes
+    # How long (seconds) a channel stays in COOLDOWN before it can be restarted.
+    restart_cooldown_seconds: int = 120         # 2 minutes
+    # Small buffer between stop and start during auto-restart.
+    restart_pre_delay_seconds: float = 2.0
+
     # File mover (1_record → 2_chunks)
     file_mover_interval_seconds: int = 30
     # A file must be at least this many seconds old before it is moved
     # (guards against moving a file FFmpeg is still writing)
     file_mover_min_age_seconds: int = 30
+    # Phase 1.6 — double-check: time (seconds) between the two size reads
+    file_mover_stability_check_seconds: float = 1.0
 
     # Retention cleaner
     retention_run_interval_seconds: int = 3600  # once per hour

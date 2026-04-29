@@ -4,17 +4,15 @@ Process manager for PGMRec FFmpeg recording processes.
 Manages the full lifecycle of one FFmpeg process per channel:
   - start    — Popen with PID tracking, stderr → log file
   - stop     — SIGTERM → timeout → SIGKILL
-  - restart  — stop + start
+  - restart  — stop + pre-delay + start
   - status   — live poll of the OS process
   - log tail — read last N lines from the active log file
 
-Design rules:
-  - PID-based tracking ONLY (no window titles)
-  - Never block the API — subprocess is launched then detached
-  - Always log FFmpeg stderr
-  - Safe subprocess execution (shell=False)
-  - Multi-channel from day one (keyed by channel_id str)
-  - Adopted processes (orphaned from a previous server run) are tracked by PID only
+Phase 1.6 additions:
+  - Stall tracking: last_file_path / last_file_size / last_size_change_at per ProcessInfo
+  - Restart backoff: sliding-window restart counter + COOLDOWN state per channel
+  - DEGRADED / COOLDOWN health states
+  - Pre-delay between stop and start during auto-restart
 """
 from __future__ import annotations
 
@@ -24,6 +22,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -108,7 +107,10 @@ class ProcessInfo:
     1. Fresh start (process is set): we own the Popen handle.
     2. Adopted orphan (process is None): we only have the PID from a previous run.
 
-    All liveness checks use is_alive(), which handles both cases.
+    Phase 1.6 additions:
+    - Stall detection fields: track the newest segment file's size across watchdog
+      cycles.  If the size stops changing for stall_detection_seconds, the
+      recording is considered stalled.
     """
 
     channel_id: str
@@ -118,6 +120,14 @@ class ProcessInfo:
     process: Optional[subprocess.Popen] = field(default=None)
     last_seen_alive: datetime = field(init=False)
     health: HealthStatus = field(default=HealthStatus.UNKNOWN)
+
+    # ── Stall detection state ─────────────────────────────────────────────
+    # Path of the segment file we are currently tracking size for
+    _stall_tracked_path: Optional[str] = field(default=None, repr=False)
+    # Size (bytes) at the last watchdog cycle
+    _stall_last_size: Optional[int] = field(default=None, repr=False)
+    # When the size last actually changed
+    _stall_last_size_change_at: Optional[datetime] = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         self.last_seen_alive = datetime.now(timezone.utc)
@@ -135,10 +145,91 @@ class ProcessInfo:
     def mark_alive(self) -> None:
         """Called by the watchdog each time the process is confirmed alive."""
         self.last_seen_alive = datetime.now(timezone.utc)
-        self.health = HealthStatus.HEALTHY
+        if self.health not in (HealthStatus.DEGRADED, HealthStatus.COOLDOWN):
+            self.health = HealthStatus.HEALTHY
 
     def mark_unhealthy(self) -> None:
         self.health = HealthStatus.UNHEALTHY
+
+    def mark_degraded(self) -> None:
+        self.health = HealthStatus.DEGRADED
+
+    def update_stall_tracking(self, file_path: str, current_size: int) -> bool:
+        """
+        Update stall-detection state for *file_path* / *current_size*.
+
+        Returns True if the size grew (or the tracked file changed), False if
+        it appears to be stalled (no size growth since last call).
+        """
+        now = datetime.now(timezone.utc)
+
+        # New file started — reset tracking
+        if file_path != self._stall_tracked_path:
+            self._stall_tracked_path = file_path
+            self._stall_last_size = current_size
+            self._stall_last_size_change_at = now
+            return True  # file just changed → not stalled
+
+        # Same file — check growth
+        if current_size != self._stall_last_size:
+            self._stall_last_size = current_size
+            self._stall_last_size_change_at = now
+            return True  # growing → not stalled
+
+        return False  # size unchanged
+
+    @property
+    def stall_seconds(self) -> Optional[float]:
+        """Seconds since the tracked file last grew, or None if unknown."""
+        if self._stall_last_size_change_at is None:
+            return None
+        return (datetime.now(timezone.utc) - self._stall_last_size_change_at).total_seconds()
+
+    @property
+    def last_file_size(self) -> Optional[int]:
+        return self._stall_last_size
+
+    @property
+    def last_file_size_change_at(self) -> Optional[datetime]:
+        return self._stall_last_size_change_at
+
+
+# ─── Restart backoff tracker ──────────────────────────────────────────────────
+
+@dataclass
+class _RestartHistory:
+    """Per-channel restart rate-limiting state."""
+
+    _timestamps: deque = field(default_factory=lambda: deque(maxlen=100))
+    _cooldown_until: Optional[datetime] = field(default=None)
+
+    def record_attempt(self) -> None:
+        self._timestamps.append(datetime.now(timezone.utc))
+
+    def count_in_window(self, window_seconds: float) -> int:
+        cutoff = datetime.now(timezone.utc).timestamp() - window_seconds
+        return sum(1 for ts in self._timestamps if ts.timestamp() >= cutoff)
+
+    def last_restart_time(self) -> Optional[datetime]:
+        return self._timestamps[-1] if self._timestamps else None
+
+    def is_in_cooldown(self) -> bool:
+        if self._cooldown_until is None:
+            return False
+        return datetime.now(timezone.utc) < self._cooldown_until
+
+    def cooldown_remaining_seconds(self) -> float:
+        if self._cooldown_until is None:
+            return 0.0
+        remaining = (self._cooldown_until - datetime.now(timezone.utc)).total_seconds()
+        return max(0.0, remaining)
+
+    def enter_cooldown(self, seconds: float) -> None:
+        from datetime import timedelta
+        self._cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+
+    def exit_cooldown(self) -> None:
+        self._cooldown_until = None
 
 
 # ─── Process manager ──────────────────────────────────────────────────────────
@@ -154,6 +245,13 @@ class ProcessManager:
 
     def __init__(self) -> None:
         self._procs: dict[str, ProcessInfo] = {}
+        # Restart history survives process restarts within a server session
+        self._restart_history: dict[str, _RestartHistory] = {}
+
+    def _get_or_create_history(self, channel_id: str) -> _RestartHistory:
+        if channel_id not in self._restart_history:
+            self._restart_history[channel_id] = _RestartHistory()
+        return self._restart_history[channel_id]
 
     # ── Internal helpers ──────────────────────────────────────────────────
 
@@ -212,6 +310,10 @@ class ProcessManager:
         return ProcessStatus.RUNNING if self.is_running(channel_id) else ProcessStatus.STOPPED
 
     def get_health(self, channel_id: str) -> HealthStatus:
+        # COOLDOWN is a channel-level state that persists even if not running
+        hist = self._restart_history.get(channel_id)
+        if hist and hist.is_in_cooldown():
+            return HealthStatus.COOLDOWN
         info = self._procs.get(channel_id)
         if info is None:
             return HealthStatus.UNKNOWN
@@ -247,6 +349,103 @@ class ProcessManager:
         info = self._procs.get(channel_id)
         if info:
             info.mark_unhealthy()
+
+    def mark_degraded(self, channel_id: str) -> None:
+        info = self._procs.get(channel_id)
+        if info:
+            info.mark_degraded()
+
+    # ── Stall tracking ────────────────────────────────────────────────────
+
+    def update_stall_tracking(
+        self, channel_id: str, file_path: str, current_size: int
+    ) -> bool:
+        """
+        Update stall-detection state.  Returns True if the file is growing
+        (healthy), False if stalled.
+        """
+        info = self._procs.get(channel_id)
+        if info is None:
+            return True
+        return info.update_stall_tracking(file_path, current_size)
+
+    def get_stall_seconds(self, channel_id: str) -> Optional[float]:
+        info = self._procs.get(channel_id)
+        return info.stall_seconds if info else None
+
+    def get_last_file_size(self, channel_id: str) -> Optional[int]:
+        info = self._procs.get(channel_id)
+        return info.last_file_size if info else None
+
+    def get_last_file_size_change_at(self, channel_id: str) -> Optional[datetime]:
+        info = self._procs.get(channel_id)
+        return info.last_file_size_change_at if info else None
+
+    # ── Restart backoff ───────────────────────────────────────────────────
+
+    def is_in_cooldown(self, channel_id: str) -> bool:
+        hist = self._restart_history.get(channel_id)
+        return hist.is_in_cooldown() if hist else False
+
+    def get_cooldown_remaining(self, channel_id: str) -> float:
+        hist = self._restart_history.get(channel_id)
+        return hist.cooldown_remaining_seconds() if hist else 0.0
+
+    def get_restart_count_window(self, channel_id: str) -> int:
+        settings = get_settings()
+        hist = self._restart_history.get(channel_id)
+        if hist is None:
+            return 0
+        return hist.count_in_window(settings.restart_backoff_window_seconds)
+
+    def get_last_restart_time(self, channel_id: str) -> Optional[datetime]:
+        hist = self._restart_history.get(channel_id)
+        return hist.last_restart_time() if hist else None
+
+    def attempt_auto_restart(self, channel_id: str) -> bool:
+        """
+        Gate all auto-restart attempts through the backoff policy.
+
+        Returns True if the caller should proceed with the restart.
+        Returns False if the channel is in cooldown or just entered cooldown.
+        Also sets health to DEGRADED when multiple restarts have occurred.
+        """
+        settings = get_settings()
+        hist = self._get_or_create_history(channel_id)
+
+        # Already in cooldown — skip
+        if hist.is_in_cooldown():
+            remaining = hist.cooldown_remaining_seconds()
+            logger.info(
+                "[%s] In COOLDOWN (%.0fs remaining) — auto-restart blocked.",
+                channel_id, remaining,
+            )
+            return False
+
+        # Record this attempt
+        hist.record_attempt()
+        count = hist.count_in_window(settings.restart_backoff_window_seconds)
+
+        # Too many restarts → enter cooldown
+        if count > settings.restart_backoff_max_restarts:
+            hist.enter_cooldown(settings.restart_cooldown_seconds)
+            # Apply COOLDOWN health to the in-memory process entry (if any)
+            info = self._procs.get(channel_id)
+            if info:
+                info.health = HealthStatus.COOLDOWN
+            logger.warning(
+                "[%s] Too many restarts (%d in window) — entering COOLDOWN for %ds.",
+                channel_id, count, settings.restart_cooldown_seconds,
+            )
+            return False  # don't restart right now
+
+        # Degraded if this isn't the first restart in the window
+        if count > 1:
+            self.mark_degraded(channel_id)
+
+        return True
+
+    # ── Core lifecycle ────────────────────────────────────────────────────
 
     def start(self, channel_id: str, config: ChannelConfig, db: Session) -> ProcessInfo:
         """
@@ -401,8 +600,16 @@ class ProcessManager:
         return True
 
     def restart(self, channel_id: str, config: ChannelConfig, db: Session) -> ProcessInfo:
-        """Stop (if running) then start."""
+        """
+        Stop (if running) then start, with a short pre-delay buffer.
+
+        The pre-delay (restart_pre_delay_seconds) gives the OS time to fully
+        clean up the previous process before a new one is launched.
+        """
         self.stop(channel_id, db)
+        delay = get_settings().restart_pre_delay_seconds
+        if delay > 0:
+            time.sleep(delay)
         return self.start(channel_id, config, db)
 
     def get_log_tail(self, channel_id: str, lines: int = 100) -> list[str]:
@@ -420,9 +627,6 @@ class ProcessManager:
         - If the PID is still alive → adopt it (register in _procs so the watchdog
           picks it up and monitors it going forward).
         - If the PID is dead (or unknown) → mark the record as STOPPED.
-
-        We deliberately do NOT restart dead channels automatically here; the
-        watchdog will handle that once it starts running.
         """
         stale_statuses = {ProcessStatus.RUNNING.value, ProcessStatus.STARTING.value}
         stale_records = (
@@ -494,3 +698,4 @@ def get_process_manager() -> ProcessManager:
     if _manager is None:
         _manager = ProcessManager()
     return _manager
+

@@ -131,6 +131,8 @@ class ProcessStatus(str, Enum):
 class HealthStatus(str, Enum):
     HEALTHY = "healthy"
     UNHEALTHY = "unhealthy"
+    DEGRADED = "degraded"   # operating but repeated anomalies / restarts
+    COOLDOWN = "cooldown"   # too many restarts — auto-restart temporarily paused
     UNKNOWN = "unknown"
 
 
@@ -230,4 +232,23 @@ class SystemHealthResponse(BaseModel):
     running: int
     healthy: int
     unhealthy: int
+    degraded: int
+    cooldown: int
     unknown: int
+
+
+class ChannelDebugResponse(BaseModel):
+    """Detailed real-time diagnostics for a single channel — Phase 1.6."""
+
+    channel_id: str
+    health: HealthStatus
+    pid: Optional[int] = None
+    # Restart history
+    last_restart_time: Optional[datetime] = None
+    restart_count_window: int = 0
+    cooldown_remaining_seconds: float = 0.0
+    # Segment / file monitoring
+    last_segment_time: Optional[datetime] = None
+    last_file_size: Optional[int] = None
+    last_file_size_change_at: Optional[datetime] = None
+    stall_seconds: Optional[float] = None  # seconds since last file size growth
