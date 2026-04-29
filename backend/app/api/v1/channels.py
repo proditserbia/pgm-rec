@@ -29,6 +29,7 @@ from ...models.schemas import (
     ChannelStatusResponse,
     ChannelSummary,
     CommandPreviewResponse,
+    HealthStatus,
     LogsResponse,
     ProcessHistoryEntry,
     ProcessStatus,
@@ -63,9 +64,11 @@ def _status_response(ch: Channel) -> ChannelStatusResponse:
         channel_id=ch.id,
         channel_name=ch.name,
         status=proc_status,
+        health=pm.get_health(ch.id),
         pid=pid,
         started_at=started_at,
         uptime_seconds=uptime,
+        last_seen_alive=pm.get_last_seen_alive(ch.id),
         log_path=str(log_path) if log_path else None,
     )
 
@@ -78,6 +81,7 @@ def _summary(ch: Channel) -> ChannelSummary:
         display_name=ch.display_name,
         enabled=ch.enabled,
         status=pm.get_status(ch.id),
+        health=pm.get_health(ch.id),
         pid=pm.get_pid(ch.id),
     )
 
@@ -229,6 +233,7 @@ def get_history(
             stopped_at=r.stopped_at,
             exit_code=r.exit_code,
             log_path=r.log_path,
+            adopted=r.adopted,
         )
         for r in records
     ]

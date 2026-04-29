@@ -28,6 +28,25 @@ class Settings(BaseSettings):
     # Process control
     stop_timeout_seconds: int = 15
 
+    # Watchdog
+    # How often the watchdog loop runs (seconds)
+    watchdog_interval_seconds: int = 10
+    # Grace period added on top of segment_time before declaring stale output
+    watchdog_segment_tolerance_seconds: int = 30
+
+    # File mover (1_record → 2_chunks)
+    file_mover_interval_seconds: int = 30
+    # A file must be at least this many seconds old before it is moved
+    # (guards against moving a file FFmpeg is still writing)
+    file_mover_min_age_seconds: int = 30
+
+    # Retention cleaner
+    retention_run_interval_seconds: int = 3600  # once per hour
+
+    # Log management
+    # Maximum number of log files to keep per channel (oldest are deleted)
+    log_max_files_per_channel: int = 30
+
 
 _settings: Settings | None = None
 

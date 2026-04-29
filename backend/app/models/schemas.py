@@ -118,7 +118,7 @@ class ChannelConfig(BaseModel):
     preview: PreviewConfig = Field(default_factory=PreviewConfig)
 
 
-# ─── Process / status ─────────────────────────────────────────────────────────
+# ─── Process / health status ──────────────────────────────────────────────────
 
 class ProcessStatus(str, Enum):
     STOPPED = "stopped"
@@ -128,15 +128,23 @@ class ProcessStatus(str, Enum):
     ERROR = "error"
 
 
+class HealthStatus(str, Enum):
+    HEALTHY = "healthy"
+    UNHEALTHY = "unhealthy"
+    UNKNOWN = "unknown"
+
+
 # ─── API response models ───────────────────────────────────────────────────────
 
 class ChannelStatusResponse(BaseModel):
     channel_id: str
     channel_name: str
     status: ProcessStatus
+    health: HealthStatus = HealthStatus.UNKNOWN
     pid: Optional[int] = None
     started_at: Optional[datetime] = None
     uptime_seconds: Optional[float] = None
+    last_seen_alive: Optional[datetime] = None
     log_path: Optional[str] = None
 
 
@@ -146,6 +154,7 @@ class ChannelSummary(BaseModel):
     display_name: str
     enabled: bool
     status: ProcessStatus
+    health: HealthStatus = HealthStatus.UNKNOWN
     pid: Optional[int] = None
 
 
@@ -182,3 +191,43 @@ class ProcessHistoryEntry(BaseModel):
     stopped_at: Optional[datetime]
     exit_code: Optional[int]
     log_path: Optional[str]
+    adopted: bool = False
+
+
+# ─── Monitoring response models ───────────────────────────────────────────────
+
+class WatchdogEventResponse(BaseModel):
+    id: int
+    channel_id: str
+    event_type: str
+    detected_at: datetime
+    details: Optional[str] = None
+
+
+class SegmentAnomalyResponse(BaseModel):
+    id: int
+    channel_id: str
+    detected_at: datetime
+    last_segment_time: Optional[datetime]
+    expected_interval_seconds: float
+    actual_gap_seconds: float
+    resolved: bool
+
+
+class ChannelHealthResponse(BaseModel):
+    channel_id: str
+    channel_name: str
+    status: ProcessStatus
+    health: HealthStatus
+    pid: Optional[int] = None
+    last_seen_alive: Optional[datetime] = None
+    recent_events: list[WatchdogEventResponse] = Field(default_factory=list)
+
+
+class SystemHealthResponse(BaseModel):
+    channels: list[ChannelHealthResponse]
+    total: int
+    running: int
+    healthy: int
+    unhealthy: int
+    unknown: int

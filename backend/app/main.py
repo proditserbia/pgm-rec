@@ -2,13 +2,16 @@
 PGMRec — Program Recorder System
 FastAPI application entry point.
 
-Phase 1: channel control for RTS1 (start / stop / restart / status / logs).
+Phase 1.5: recording reliability layer.
+  - Recording watchdog (process alive + file output monitoring, auto-restart)
+  - File mover (1_record → 2_chunks)
+  - Retention cleaner (delete old files from 3_final)
+  - Improved process manager (adopt orphaned PIDs, track last_seen_alive)
 """
 from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,8 +20,13 @@ from .config.settings import get_settings
 from .db.models import Channel
 from .db.session import get_session_factory, init_db
 from .models.schemas import ChannelConfig
+from .services.file_mover import run_file_mover
 from .services.process_manager import get_process_manager
+from .services.retention import run_retention
+from .services.scheduler import get_scheduler
+from .services.watchdog import run_watchdog
 from .api.v1 import channels as channels_router
+from .api.v1 import monitoring as monitoring_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -78,7 +86,7 @@ async def lifespan(app: FastAPI):
     for directory in (settings.data_dir, settings.logs_dir, settings.channels_config_dir):
         directory.mkdir(parents=True, exist_ok=True)
 
-    # Create DB tables
+    # Create DB tables (idempotent — safe on every restart)
     init_db()
 
     SessionLocal = get_session_factory()
@@ -88,11 +96,33 @@ async def lifespan(app: FastAPI):
         _seed_channels(db)
 
     # Reconcile any stale process records from a previous run
+    # (adopts live orphaned PIDs; marks dead ones as stopped)
     with SessionLocal() as db:
         get_process_manager().reconcile_on_startup(db)
 
+    # Register and start background scheduler jobs
+    scheduler = get_scheduler()
+    scheduler.add(
+        "watchdog",
+        settings.watchdog_interval_seconds,
+        run_watchdog,
+    )
+    scheduler.add(
+        "file_mover",
+        settings.file_mover_interval_seconds,
+        run_file_mover,
+    )
+    scheduler.add(
+        "retention",
+        settings.retention_run_interval_seconds,
+        run_retention,
+    )
+    await scheduler.start()
+
     logger.info("PGMRec %s ready.", settings.app_version)
     yield
+
+    await scheduler.stop()
     logger.info("PGMRec shutting down.")
 
 
@@ -106,7 +136,7 @@ def create_app() -> FastAPI:
         version=settings.app_version,
         description=(
             "Broadcast-grade recording and compliance system. "
-            "Phase 1: channel recording control via FFmpeg."
+            "Phase 1.5: recording reliability layer."
         ),
         lifespan=lifespan,
     )
@@ -120,6 +150,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(channels_router.router, prefix="/api/v1")
+    app.include_router(monitoring_router.router, prefix="/api/v1")
 
     @app.get("/health", tags=["system"])
     def health():

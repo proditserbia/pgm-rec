@@ -30,18 +30,18 @@ from ..models.schemas import ChannelConfig, OverlayConfig
 # ─── FFmpeg filter escaping helpers ───────────────────────────────────────────
 
 def _escape_fontfile(path: str) -> str:
-    """
+    r"""
     Escape a filesystem path for use as the drawtext ``fontfile`` option value.
 
     Uses FFmpeg single-quote wrapping.  Inside single quotes:
-      - backslash  →  \\\\  (escaped to produce \\ which FFmpeg reads as \)
-      - colon      →  \\:   (escaped so FFmpeg doesn't treat it as option separator)
+      - backslash  ->  \\\\  (escaped to produce \\ which FFmpeg reads as \)
+      - colon      ->  \:    (escaped so FFmpeg doesn't treat it as option separator)
 
     Example (Windows)::
 
-      C:\\Windows\\Fonts\\verdana.ttf  ->  'C\\:\\\\Windows\\\\Fonts\\\\verdana.ttf'
+      C:\Windows\Fonts\verdana.ttf  ->  'C\:\\Windows\\Fonts\\verdana.ttf'
 
-    FFmpeg then resolves that to the actual path C:\\Windows\\Fonts\\verdana.ttf.
+    FFmpeg then resolves that to the actual path C:\Windows\Fonts\verdana.ttf.
     """
     escaped = path.replace("\\", "\\\\").replace(":", "\\:")
     return f"'{escaped}'"
