@@ -2,13 +2,11 @@
 PGMRec — Program Recorder System
 FastAPI application entry point.
 
-Phase 1.6: advanced reliability and failure protection.
-  - Watchdog runs as an independent asyncio Task (not via shared scheduler)
-  - Stall detection (file size growth tracking)
-  - Restart backoff / COOLDOWN state
-  - DEGRADED / COOLDOWN health states
-  - Safe file mover (double size-stability check)
-  - Debug endpoint: GET /api/v1/channels/{id}/debug
+Phase 2: multi-channel support + preview foundation.
+  - 4 channels: rts1, rts2, rts3, rts_test (loaded from data/channels/*.json)
+  - Preview process per channel (isolated from recording)
+  - Preview control API: start/stop/status/stream
+  - Preview watchdog (light — marks DOWN, no auto-restart)
 """
 from __future__ import annotations
 
@@ -24,12 +22,14 @@ from .db.models import Channel
 from .db.session import get_session_factory, init_db
 from .models.schemas import ChannelConfig
 from .services.file_mover import run_file_mover
+from .services.preview_manager import run_preview_watchdog_loop
 from .services.process_manager import get_process_manager
 from .services.retention import run_retention
 from .services.scheduler import get_scheduler
 from .services.watchdog import run_watchdog_loop
 from .api.v1 import channels as channels_router
 from .api.v1 import monitoring as monitoring_router
+from .api.v1 import preview as preview_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -109,6 +109,13 @@ async def lifespan(app: FastAPI):
         run_watchdog_loop(), name="pgmrec-watchdog"
     )
 
+    # ── Preview watchdog — independent asyncio Task ────────────────────────
+    # Light version: only marks DOWN, never auto-restarts, never touches
+    # the recording pipeline.
+    preview_watchdog_task = asyncio.create_task(
+        run_preview_watchdog_loop(), name="pgmrec-preview-watchdog"
+    )
+
     # ── Shared scheduler: file mover + retention ─────────────────────────
     scheduler = get_scheduler()
     scheduler.add(
@@ -128,8 +135,13 @@ async def lifespan(app: FastAPI):
 
     # Graceful shutdown
     watchdog_task.cancel()
+    preview_watchdog_task.cancel()
     try:
         await watchdog_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await preview_watchdog_task
     except asyncio.CancelledError:
         pass
 
@@ -147,7 +159,7 @@ def create_app() -> FastAPI:
         version=settings.app_version,
         description=(
             "Broadcast-grade recording and compliance system. "
-            "Phase 1.6: advanced reliability and failure protection."
+            "Phase 2: multi-channel support (rts1/rts2/rts3/rts_test) + preview foundation."
         ),
         lifespan=lifespan,
     )
@@ -162,6 +174,7 @@ def create_app() -> FastAPI:
 
     app.include_router(channels_router.router, prefix="/api/v1")
     app.include_router(monitoring_router.router, prefix="/api/v1")
+    app.include_router(preview_router.router, prefix="/api/v1")
 
     @app.get("/health", tags=["system"])
     def health():

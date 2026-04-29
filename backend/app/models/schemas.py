@@ -92,7 +92,8 @@ class PreviewConfig(BaseModel):
 
     enabled: bool = False
     port: int = 23001
-    scale: str = "300:-1"
+    scale: str = "320:180"
+    fps: int = 5
 
 
 class ChannelConfig(BaseModel):
@@ -252,3 +253,22 @@ class ChannelDebugResponse(BaseModel):
     last_file_size: Optional[int] = None
     last_file_size_change_at: Optional[datetime] = None
     stall_seconds: Optional[float] = None  # seconds since last file size growth
+
+
+# ─── Preview response models — Phase 2 ───────────────────────────────────────
+
+class PreviewHealth(str, Enum):
+    HEALTHY = "healthy"
+    DOWN = "down"
+    UNKNOWN = "unknown"
+
+
+class PreviewStatusResponse(BaseModel):
+    """Live status of the preview process for one channel."""
+
+    channel_id: str
+    running: bool
+    pid: Optional[int] = None
+    started_at: Optional[datetime] = None
+    stream_url: Optional[str] = None
+    health: PreviewHealth = PreviewHealth.UNKNOWN

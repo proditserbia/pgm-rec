@@ -191,3 +191,42 @@ def build_ffmpeg_command(config: ChannelConfig) -> list[str]:
 def format_command_for_log(cmd: list[str]) -> str:
     """Return a human-readable representation of the command (uses shlex quoting)."""
     return shlex.join(cmd)
+
+
+def build_preview_command(config: ChannelConfig) -> list[str]:
+    """
+    Build a lightweight FFmpeg preview command as a subprocess argument list.
+
+    Produces low-resolution, low-fps MJPEG frames on stdout (pipe:1).
+    The caller is responsible for reading stdout and distributing frames.
+
+    Key differences from the recording command:
+    - Audio disabled (-an)
+    - Scale down + fps reduce via -vf
+    - Output: raw MJPEG frames to stdout (-f mjpeg pipe:1)
+    - No stream_segment muxer, no file output
+    - No overlay filter (saves CPU; preview does not need watermark)
+    """
+    cap = config.capture
+    preview = config.preview
+
+    cmd: list[str] = [config.ffmpeg_path]
+
+    # ── Input ──────────────────────────────────────────────────────────────
+    cmd += ["-f", cap.device_type]
+    cmd += ["-s", cap.resolution]
+    cmd += ["-framerate", str(cap.framerate)]
+    cmd += ["-i", _build_input_specifier(config)]
+
+    # ── Video filters: scale down + fps reduction ──────────────────────────
+    cmd += ["-vf", f"scale={preview.scale},fps={preview.fps}"]
+
+    # ── Disable audio (preview is video-only) ─────────────────────────────
+    cmd += ["-an"]
+
+    # ── Output: MJPEG frames to stdout ────────────────────────────────────
+    cmd += ["-f", "mjpeg"]
+    cmd += ["-q:v", "5"]  # JPEG quality 1=best, 31=worst; 5 is a good preview quality
+    cmd.append("pipe:1")
+
+    return cmd

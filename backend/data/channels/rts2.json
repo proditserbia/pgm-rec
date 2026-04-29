@@ -1,13 +1,13 @@
 {
-  "id": "rts1",
-  "name": "RTS1",
-  "display_name": "RTS1 - PRVI PROGRAM",
+  "id": "rts2",
+  "name": "RTS2",
+  "display_name": "RTS2 - DRUGI PROGRAM",
   "enabled": true,
   "ffmpeg_path": "C:\\AutoRec\\ffmpeg\\bin\\ffmpeg.exe",
   "capture": {
     "device_type": "dshow",
-    "video_device": "Decklink Video Capture",
-    "audio_device": "Decklink Audio Capture",
+    "video_device": "Decklink Video Capture 2",
+    "audio_device": "Decklink Audio Capture 2",
     "resolution": "720x576",
     "framerate": 25
   },
@@ -42,9 +42,9 @@
     "filename_pattern": "%d%m%y-%H%M%S"
   },
   "paths": {
-    "record_dir": "D:\\AutoRec\\record\\rts1\\1_record",
-    "chunks_dir": "D:\\AutoRec\\record\\rts1\\2_chunks",
-    "final_dir": "D:\\AutoRec\\record\\rts1\\3_final"
+    "record_dir": "D:\\AutoRec\\record\\rts2\\1_record",
+    "chunks_dir": "D:\\AutoRec\\record\\rts2\\2_chunks",
+    "final_dir": "D:\\AutoRec\\record\\rts2\\3_final"
   },
   "retention": {
     "enabled": true,
@@ -52,7 +52,7 @@
   },
   "preview": {
     "enabled": false,
-    "port": 23001,
+    "port": 23002,
     "scale": "320:180",
     "fps": 5
   }
