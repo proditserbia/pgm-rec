@@ -1,5 +1,9 @@
 """SQLAlchemy ORM models for PGMRec."""
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -19,9 +23,9 @@ class Channel(Base):
     display_name: Mapped[str] = mapped_column(String(256), nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     config_json: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+        DateTime, default=_utcnow, onupdate=_utcnow, nullable=False
     )
 
     process_records: Mapped[list["ProcessRecord"]] = relationship(
@@ -44,9 +48,9 @@ class ProcessRecord(Base):
     stopped_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     log_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+        DateTime, default=_utcnow, onupdate=_utcnow, nullable=False
     )
 
     channel: Mapped["Channel"] = relationship(back_populates="process_records")

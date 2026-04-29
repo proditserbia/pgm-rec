@@ -14,7 +14,7 @@ Endpoints:
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -58,7 +58,7 @@ def _status_response(ch: Channel) -> ChannelStatusResponse:
     log_path = pm.get_log_path(ch.id)
     uptime: float | None = None
     if started_at and proc_status == ProcessStatus.RUNNING:
-        uptime = (datetime.utcnow() - started_at).total_seconds()
+        uptime = (datetime.now(timezone.utc) - started_at).total_seconds()
     return ChannelStatusResponse(
         channel_id=ch.id,
         channel_name=ch.name,

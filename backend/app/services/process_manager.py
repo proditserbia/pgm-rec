@@ -23,7 +23,7 @@ import signal
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -222,7 +222,7 @@ class ProcessManager:
             # Parent no longer needs the handle; subprocess retains its own copy
             log_fh.close()
 
-        started_at = datetime.utcnow()
+        started_at = datetime.now(timezone.utc)
         info = ProcessInfo(
             channel_id=channel_id,
             process=process,
@@ -284,7 +284,7 @@ class ProcessManager:
             logger.error("[%s] Error while stopping process: %s", channel_id, exc)
 
         exit_code = info.process.returncode
-        stopped_at = datetime.utcnow()
+        stopped_at = datetime.now(timezone.utc)
         del self._procs[channel_id]
 
         # Update the most recent running record in DB
@@ -345,7 +345,7 @@ class ProcessManager:
                 was_alive,
             )
             rec.status = ProcessStatus.STOPPED.value
-            rec.stopped_at = datetime.utcnow()
+            rec.stopped_at = datetime.now(timezone.utc)
         db.commit()
         logger.info("Reconciled %d stale process record(s).", len(stale_records))
 
