@@ -131,7 +131,7 @@ def _warn_default_credentials() -> None:
     Helps catch misconfigured production deployments before they become a problem.
     """
     settings = get_settings()
-    _DEFAULT_JWT = "change-me-in-production-pgmrec-secret"
+    _DEFAULT_JWT = "change-me-before-starting-pgmrec-secret"
     _DEFAULT_PW = "pgmrec-admin"
     _DEFAULT_USER = "admin"
 
@@ -231,9 +231,12 @@ async def lifespan(app: FastAPI):
     ):
         directory.mkdir(parents=True, exist_ok=True)
 
-    # Create DB tables (idempotent — safe on every restart for SQLite dev/test).
-    # For PostgreSQL production, tables are managed by Alembic migrations.
-    init_db()
+    # Create DB tables for SQLite dev/test only.
+    # For PostgreSQL production, schema is managed exclusively by Alembic migrations.
+    # Calling create_all() on PostgreSQL would create tables outside Alembic's
+    # version tracking, causing `alembic upgrade head` to fail with "table already exists".
+    if settings.database_url.startswith("sqlite"):
+        init_db()
 
     SessionLocal = get_session_factory()
 

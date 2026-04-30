@@ -99,7 +99,7 @@ class Settings(BaseSettings):
 
     # Phase 4 — Authentication & RBAC
     # HS256 secret used to sign JWTs.  Override in production via PGMREC_JWT_SECRET_KEY.
-    jwt_secret_key: str = "change-me-in-production-pgmrec-secret"
+    jwt_secret_key: str = "change-me-before-starting-pgmrec-secret"
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 480   # 8 hours
 
