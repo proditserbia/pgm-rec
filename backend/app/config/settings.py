@@ -108,9 +108,13 @@ class Settings(BaseSettings):
     preview_dir: Path = _BASE_DIR / "data" / "preview"
 
     # Phase 6 — Deployment
-    # Comma-separated allowed CORS origins.  Use "*" for dev; list explicit origins in prod.
-    # Example: PGMREC_CORS_ORIGINS=https://rec.example.com,https://api.example.com
-    cors_origins: str = "*"
+    # Comma-separated allowed CORS origins.
+    # PGMRec is a LAN-only application — list the exact browser origin(s) that
+    # should be able to reach the API.
+    # Single-machine: http://localhost:8000  (default)
+    # LAN access:     http://192.168.1.10:8000  (your server's LAN IP)
+    # Multiple:       http://192.168.1.10:8000,http://pgmrec.local:8000
+    cors_origins: str = "http://localhost:8000"
     # Absolute path to ffmpeg binary.  Overrides per-channel ffmpeg_path if set.
     # If empty, per-channel config is used (default).
     ffmpeg_path_override: str = ""

@@ -1,13 +1,20 @@
 # ─── PGMRec — docker-compose.yml ─────────────────────────────────────────────
 #
 # Brings up the PGMRec backend (and optionally an Nginx reverse proxy).
+# PGMRec is a LAN-only application — it is not designed for public internet access.
 #
-# Quick start:
+# Quick start (single machine / local access only):
 #   cp .env.example .env          # edit secrets
 #   docker compose up -d
+#   # Access: http://localhost:8000
+#
+# LAN access (from other machines on your network):
+#   In .env, set: PGMREC_CORS_ORIGINS=http://192.168.1.10:8000
+#   In ports below, change 127.0.0.1:8000:8000  →  0.0.0.0:8000:8000
+#   Access: http://192.168.1.10:8000  (replace with your server's LAN IP)
 #
 # The backend serves both the API (/api/v1/) and the pre-built frontend (/)
-# from port 8000.  For a production reverse proxy add the nginx service below.
+# from port 8000.  For an optional Nginx proxy uncomment the nginx service below.
 
 services:
 
@@ -20,7 +27,9 @@ services:
     restart: unless-stopped
     env_file: .env
     ports:
-      - "8000:8000"
+      # Bind to loopback by default — only this machine can reach port 8000.
+      # Change to "0.0.0.0:8000:8000" for LAN access.
+      - "127.0.0.1:8000:8000"
     volumes:
       # Persist all data outside the container
       - pgmrec-data:/app/data
@@ -36,19 +45,21 @@ services:
       start_period: 15s
 
   # ── Optional: Nginx reverse proxy ─────────────────────────────────────────
-  # Uncomment to expose on port 80/443 with TLS termination.
-  # Requires: nginx.conf (see docs/nginx.conf.example)
+  # Useful for LAN-wide access via a hostname or custom port, or to add
+  # optional HTTPS with a self-signed / local CA certificate.
+  # Requires: docs/nginx.conf.example (edit server_name to your LAN hostname/IP)
   #
   # nginx:
   #   image: nginx:1.27-alpine
   #   container_name: pgmrec-nginx
   #   restart: unless-stopped
   #   ports:
-  #     - "80:80"
-  #     - "443:443"
+  #     - "0.0.0.0:80:80"
+  #     - "0.0.0.0:443:443"
   #   volumes:
   #     - ./docs/nginx.conf.example:/etc/nginx/conf.d/pgmrec.conf:ro
-  #     - /etc/letsencrypt:/etc/letsencrypt:ro
+  #     # For HTTPS: mount your internal CA cert or self-signed cert
+  #     # - /etc/ssl/pgmrec:/etc/ssl/pgmrec:ro
   #   depends_on:
   #     - backend
 

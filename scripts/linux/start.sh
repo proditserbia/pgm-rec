@@ -3,16 +3,21 @@
 # Starts the backend directly using the local venv.
 # Assumes you are in the repository root.
 #
+# PGMRec is a LAN-only application.
+# Default: binds to 127.0.0.1 (local machine only).
+# For LAN access from other machines, set PGMREC_HOST=0.0.0.0 in .env or pass --host 0.0.0.0
+#
 # Usage:
 #   bash scripts/linux/start.sh
 #   bash scripts/linux/start.sh --port 8001
+#   bash scripts/linux/start.sh --host 0.0.0.0   # expose to LAN
 
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 BACKEND_DIR="$REPO_DIR/backend"
 VENV_DIR="$REPO_DIR/.venv"
-HOST="${PGMREC_HOST:-0.0.0.0}"
+HOST="${PGMREC_HOST:-127.0.0.1}"
 PORT="${PGMREC_PORT:-8000}"
 
 # Allow override via CLI args

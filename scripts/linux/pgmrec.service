@@ -9,7 +9,11 @@ Group=pgmrec
 WorkingDirectory=/opt/pgmrec/backend
 Environment="PATH=/opt/pgmrec/.venv/bin:/usr/local/bin:/usr/bin:/bin"
 EnvironmentFile=-/opt/pgmrec/.env
-ExecStart=/opt/pgmrec/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+# PGMRec is a LAN-only application.
+# Default: binds to 127.0.0.1 (local machine only).
+# For LAN access from other machines, change to --host 0.0.0.0
+# and set PGMREC_CORS_ORIGINS to your server's LAN IP in /opt/pgmrec/.env
+ExecStart=/opt/pgmrec/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 ExecStop=/bin/kill -TERM $MAINPID
 Restart=on-failure
 RestartSec=10

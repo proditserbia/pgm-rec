@@ -4,23 +4,37 @@
     Install PGMRec as a Windows service using NSSM.
 
 .DESCRIPTION
-    Downloads NSSM if not present, creates a 'PGMRec' Windows service that runs
-    the FastAPI backend via uvicorn in the Python virtual environment.
+    Creates a 'PGMRec' Windows service that runs the FastAPI backend via uvicorn
+    in the Python virtual environment.
+
+    PGMRec is a LAN-only application. By default the service binds to 127.0.0.1
+    (localhost only). To expose it to other machines on your LAN, pass -Host 0.0.0.0
+    and set PGMREC_CORS_ORIGINS to your server's LAN IP in C:\PGMRec\.env.
 
     Prerequisites:
       - Python 3.12+ installed and on PATH
       - FFmpeg installed (set PGMREC_FFMPEG_PATH_OVERRIDE in .env)
-      - NSSM will be downloaded to scripts\windows\nssm.exe if not present
+      - NSSM (Non-Sucking Service Manager):
+          Option A — automatic download (requires internet once during setup):
+            The script downloads nssm.exe to scripts\windows\nssm.exe automatically.
+          Option B — offline / pre-downloaded:
+            Place nssm.exe in scripts\windows\nssm.exe before running this script.
+            Download from: https://nssm.cc/release/nssm-2.24.zip  (one-time, any machine)
       - Run from repository root as Administrator
 
 .EXAMPLE
+    # Local machine only (default)
     powershell -ExecutionPolicy Bypass -File scripts\windows\install_service.ps1
+
+    # Expose to LAN (set -Host 0.0.0.0 and configure CORS in .env)
+    powershell -ExecutionPolicy Bypass -File scripts\windows\install_service.ps1 -Host 0.0.0.0
 #>
 
 param(
     [string]$InstallDir = "C:\PGMRec",
     [string]$ServiceName = "PGMRec",
     [string]$ServiceUser = "LocalSystem",
+    [string]$Host = "127.0.0.1",
     [int]$Port = 8000
 )
 
@@ -110,7 +124,7 @@ if ($existing) {
 
 Write-Host "Installing service '$ServiceName'…"
 & $nssm install $ServiceName $uvicorn
-& $nssm set $ServiceName AppParameters "app.main:app --host 0.0.0.0 --port $Port --workers 1"
+& $nssm set $ServiceName AppParameters "app.main:app --host $Host --port $Port --workers 1"
 & $nssm set $ServiceName AppDirectory "$InstallDir\backend"
 & $nssm set $ServiceName AppEnvironmentExtra "PYTHONUNBUFFERED=1"
 & $nssm set $ServiceName AppEnvFile "$envFile"
@@ -124,6 +138,15 @@ Write-Host "Installing service '$ServiceName'…"
 
 Write-Host ""
 Write-Host "=== Installation complete ===" -ForegroundColor Green
+Write-Host "  Bound to : $Host`:$Port"
+if ($Host -eq "127.0.0.1") {
+    Write-Host "  Access   : http://localhost:$Port  (local machine only)" -ForegroundColor Cyan
+    Write-Host "  LAN tip  : To expose to other LAN machines, re-run with -Host 0.0.0.0" -ForegroundColor DarkYellow
+    Write-Host "             and set PGMREC_CORS_ORIGINS=http://<your-LAN-IP>:$Port in $envFile" -ForegroundColor DarkYellow
+} else {
+    Write-Host "  Access   : http://<your-LAN-IP>:$Port" -ForegroundColor Cyan
+    Write-Host "  ⚠ Ensure PGMREC_CORS_ORIGINS is set to your LAN IP in $envFile" -ForegroundColor Yellow
+}
 Write-Host "  Edit env : $envFile"
 Write-Host "  Start    : sc start $ServiceName  (or: scripts\windows\start_service.ps1)"
 Write-Host "  Stop     : sc stop  $ServiceName  (or: scripts\windows\stop_service.ps1)"
