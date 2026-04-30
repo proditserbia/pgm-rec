@@ -3,11 +3,16 @@ import { useParams, Link } from 'react-router-dom'
 import {
   getChannel, startChannel, stopChannel, restartChannel,
   getChannelLogs, getChannelCommand, getChannelWatchdog, getChannelAnomalies,
+  startPreview, stopPreview, getPreviewStatus,
 } from '../api/client'
-import type { ChannelDetailResponse, WatchdogEventResponse, SegmentAnomalyResponse } from '../types'
+import type {
+  ChannelDetailResponse, WatchdogEventResponse, SegmentAnomalyResponse,
+  HlsPreviewStatusResponse,
+} from '../types'
 import { StatusBadge, HealthBadge } from '../components/Badge'
 import ErrorBanner from '../components/ErrorBanner'
 import ConfirmDialog from '../components/ConfirmDialog'
+import HlsPlayer from '../components/HlsPlayer'
 import { useAuth } from '../contexts/AuthContext'
 
 const POLL_MS = 5000
@@ -47,6 +52,12 @@ export default function ChannelDetail() {
   const [watchdog, setWatchdog] = useState<WatchdogEventResponse[]>([])
   const [anomalies, setAnomalies] = useState<SegmentAnomalyResponse[]>([])
 
+  // ── Preview state ──────────────────────────────────────────────────────
+  const [previewStatus, setPreviewStatus] = useState<HlsPreviewStatusResponse | null>(null)
+  const [previewBusy, setPreviewBusy] = useState(false)
+  const [previewError, setPreviewError] = useState<string | null>(null)
+  const [showPlayer, setShowPlayer] = useState(false)
+
   const fetchDetail = useCallback(async () => {
     if (!id) return
     try {
@@ -65,6 +76,11 @@ export default function ChannelDetail() {
     } catch { /* ignore */ }
   }, [id, logLines, logsPaused, isAdmin])
 
+  const fetchPreviewStatus = useCallback(async () => {
+    if (!id) return
+    try { setPreviewStatus(await getPreviewStatus(id)) } catch { /* ignore */ }
+  }, [id])
+
   // Auto-scroll
   useEffect(() => {
     if (autoScroll.current && logRef.current) {
@@ -79,9 +95,14 @@ export default function ChannelDetail() {
     if (isAdmin) getChannelCommand(id).then(r => setCommand(r.command_str)).catch(() => {})
     getChannelWatchdog(id).then(r => setWatchdog(r.recent_events)).catch(() => {})
     getChannelAnomalies(id).then(r => setAnomalies(r)).catch(() => {})
-    const iv = setInterval(() => { fetchDetail(); if (isAdmin) fetchLogs() }, POLL_MS)
+    fetchPreviewStatus()
+    const iv = setInterval(() => {
+      fetchDetail()
+      if (isAdmin) fetchLogs()
+      fetchPreviewStatus()
+    }, POLL_MS)
     return () => clearInterval(iv)
-  }, [fetchDetail, fetchLogs, id, isAdmin])
+  }, [fetchDetail, fetchLogs, fetchPreviewStatus, id, isAdmin])
 
   async function doAction(action: (id: string) => Promise<unknown>) {
     if (!id) return
@@ -98,6 +119,30 @@ export default function ChannelDetail() {
     else doAction(restartChannel)
   }
 
+  async function handleStartPreview() {
+    if (!id) return
+    setPreviewBusy(true); setPreviewError(null)
+    try {
+      const s = await startPreview(id)
+      setPreviewStatus(s)
+      setShowPlayer(true)
+    } catch (e) {
+      setPreviewError(e instanceof Error ? e.message : 'Failed to start preview')
+    } finally { setPreviewBusy(false) }
+  }
+
+  async function handleStopPreview() {
+    if (!id) return
+    setPreviewBusy(true); setPreviewError(null)
+    setShowPlayer(false)
+    try {
+      const s = await stopPreview(id)
+      setPreviewStatus(s)
+    } catch (e) {
+      setPreviewError(e instanceof Error ? e.message : 'Failed to stop preview')
+    } finally { setPreviewBusy(false) }
+  }
+
   function renderLogLine(line: string, i: number) {
     const lower = line.toLowerCase()
     const cls =
@@ -111,6 +156,7 @@ export default function ChannelDetail() {
   if (!detail) return null
 
   const { summary, config, status } = detail
+  const previewRunning = previewStatus?.running ?? false
 
   return (
     <div className="page">
@@ -158,6 +204,76 @@ export default function ChannelDetail() {
         </div>
       </div>
 
+      {/* ── HLS Preview ──────────────────────────────────────────────────── */}
+      <div className="card">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <span className="card-title" style={{ marginBottom: 0 }}>Live Preview</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{
+              fontSize: 12, fontWeight: 600,
+              color: previewRunning ? '#2e7d32' : '#666',
+            }}>
+              {previewRunning ? '● Running' : '○ Stopped'}
+            </span>
+            {isAdmin && (
+              <>
+                {!previewRunning ? (
+                  <button
+                    className="btn btn-success btn-sm"
+                    disabled={previewBusy}
+                    onClick={handleStartPreview}
+                  >
+                    Start Preview
+                  </button>
+                ) : (
+                  <button
+                    className="btn btn-danger btn-sm"
+                    disabled={previewBusy}
+                    onClick={handleStopPreview}
+                  >
+                    Stop Preview
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+
+        {previewError && <ErrorBanner message={previewError} />}
+
+        {previewRunning && !showPlayer && (
+          <div style={{ textAlign: 'center', padding: '16px 0' }}>
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={() => setShowPlayer(true)}
+            >
+              ▶ Open Player
+            </button>
+          </div>
+        )}
+
+        {previewRunning && showPlayer && id && (
+          <HlsPlayer
+            channelId={id}
+            onError={msg => setPreviewError(msg)}
+          />
+        )}
+
+        {!previewRunning && (
+          <p className="empty-state" style={{ marginBottom: 0 }}>
+            {isAdmin
+              ? 'Preview is not running. Click "Start Preview" to begin.'
+              : 'Preview is not running.'}
+          </p>
+        )}
+
+        {previewStatus && previewRunning && (
+          <div style={{ marginTop: 8, fontSize: 12, color: '#888' }}>
+            PID {previewStatus.pid} &nbsp;·&nbsp; Health: {previewStatus.health}
+          </div>
+        )}
+      </div>
+
       {/* Config */}
       <div className="card">
         <div className="card-title">Channel Configuration</div>
@@ -167,6 +283,7 @@ export default function ChannelDetail() {
         <div className="card-row"><span className="card-label">Segment time</span><span className="card-value">{config.segmentation.segment_time}</span></div>
         <div className="card-row"><span className="card-label">Record dir</span><span className="card-value" style={{ fontFamily: 'monospace', fontSize: 12 }}>{config.paths.record_dir}</span></div>
         <div className="card-row"><span className="card-label">Timezone</span><span className="card-value">{config.timezone}</span></div>
+        <div className="card-row"><span className="card-label">Preview</span><span className="card-value">{config.preview.width}×{config.preview.height} @ {config.preview.hls_fps}fps / {config.preview.video_bitrate}</span></div>
       </div>
 
       {/* FFmpeg command — admin only */}

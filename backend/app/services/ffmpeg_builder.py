@@ -193,9 +193,69 @@ def format_command_for_log(cmd: list[str]) -> str:
     return shlex.join(cmd)
 
 
+def build_hls_preview_command(config: ChannelConfig, output_dir: Path) -> list[str]:
+    """
+    Build an FFmpeg HLS preview command as a subprocess argument list — Phase 5.
+
+    Produces a low-resolution HLS stream (index.m3u8 + *.ts segments) written
+    to *output_dir*.  Completely isolated from the recording pipeline.
+
+    Key properties:
+    - Same capture source as recording (hardware must support concurrent access)
+    - Scale + fps reduction for low bandwidth
+    - Audio disabled (-an)
+    - Output: HLS muxer writing to output_dir/index.m3u8
+    - Encoder configurable (default libx264 / ultrafast; GPU variant added later)
+
+    Safe for ``subprocess.Popen(cmd, shell=False)``.
+    Never pass the result to a shell — it is not shell-escaped.
+    """
+    cap = config.capture
+    preview = config.preview
+
+    playlist_path = str(output_dir / "index.m3u8")
+    segment_pattern = str(output_dir / "seg%05d.ts")
+
+    cmd: list[str] = [config.ffmpeg_path]
+
+    # ── Suppress interactive prompts ───────────────────────────────────────
+    cmd += ["-y"]
+
+    # ── Input ──────────────────────────────────────────────────────────────
+    cmd += ["-f", cap.device_type]
+    cmd += ["-s", cap.resolution]
+    cmd += ["-framerate", str(cap.framerate)]
+    cmd += ["-i", _build_input_specifier(config)]
+
+    # ── Video filters: scale + fps ─────────────────────────────────────────
+    cmd += ["-vf", f"scale={preview.width}:{preview.height},fps={preview.hls_fps}"]
+
+    # ── Disable audio (preview is video-only) ─────────────────────────────
+    cmd += ["-an"]
+
+    # ── Encoding ───────────────────────────────────────────────────────────
+    cmd += ["-c:v", preview.encoder]
+    if preview.encoder in ("libx264", "libx265"):
+        cmd += ["-preset", "ultrafast"]
+    cmd += ["-b:v", preview.video_bitrate]
+
+    # ── HLS muxer ─────────────────────────────────────────────────────────
+    cmd += ["-f", "hls"]
+    cmd += ["-hls_time", str(preview.segment_time)]
+    cmd += ["-hls_list_size", str(preview.list_size)]
+    # delete_segments: remove old .ts files; append_list: don't rewrite whole playlist
+    cmd += ["-hls_flags", "delete_segments+append_list"]
+    cmd += ["-hls_segment_filename", segment_pattern]
+
+    # ── Output playlist ────────────────────────────────────────────────────
+    cmd.append(playlist_path)
+
+    return cmd
+
+
 def build_preview_command(config: ChannelConfig) -> list[str]:
     """
-    Build a lightweight FFmpeg preview command as a subprocess argument list.
+    Build a lightweight FFmpeg MJPEG preview command as a subprocess argument list.
 
     Produces low-resolution, low-fps MJPEG frames on stdout (pipe:1).
     The caller is responsible for reading stdout and distributing frames.

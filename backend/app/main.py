@@ -41,7 +41,8 @@ from .services.auth_service import create_user, get_user_by_username
 from .services.export_retention import run_export_retention
 from .services.export_worker import get_export_worker
 from .services.file_mover import run_file_mover
-from .services.preview_manager import run_preview_watchdog_loop
+from .services.preview_manager import run_preview_watchdog_loop as _mjpeg_watchdog_loop
+from .services.hls_preview_manager import run_hls_preview_watchdog_loop
 from .services.process_manager import get_process_manager
 from .services.retention import run_retention
 from .services.scheduler import get_scheduler
@@ -131,6 +132,7 @@ async def lifespan(app: FastAPI):
     for directory in (
         settings.data_dir, settings.logs_dir, settings.channels_config_dir,
         settings.manifests_dir, settings.exports_dir, settings.export_logs_dir,
+        settings.preview_dir,
     ):
         directory.mkdir(parents=True, exist_ok=True)
 
@@ -159,11 +161,11 @@ async def lifespan(app: FastAPI):
         run_watchdog_loop(), name="pgmrec-watchdog"
     )
 
-    # ── Preview watchdog — independent asyncio Task ────────────────────────
+    # ── HLS Preview watchdog — independent asyncio Task ────────────────────
     # Light version: only marks DOWN, never auto-restarts, never touches
     # the recording pipeline.
     preview_watchdog_task = asyncio.create_task(
-        run_preview_watchdog_loop(), name="pgmrec-preview-watchdog"
+        run_hls_preview_watchdog_loop(), name="pgmrec-hls-preview-watchdog"
     )
 
     # ── Export worker — independent asyncio Task ───────────────────────────

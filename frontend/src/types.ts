@@ -32,7 +32,19 @@ export interface EncodingConfig { video_codec: string; preset: string; video_bit
 export interface SegmentConfig { segment_time: string; segment_atclocktime: boolean; reset_timestamps: boolean; strftime: boolean; filename_pattern: string }
 export interface PathConfig { record_dir: string; chunks_dir: string; final_dir: string }
 export interface RetentionConfig { enabled: boolean; days: number }
-export interface PreviewConfig { enabled: boolean; port: number; scale: string; fps: number }
+export interface PreviewConfig {
+  enabled: boolean
+  port: number
+  scale: string
+  fps: number
+  width: number
+  height: number
+  hls_fps: number
+  video_bitrate: string
+  encoder: string
+  segment_time: number
+  list_size: number
+}
 
 export interface ChannelConfig {
   id: string; name: string; display_name: string; enabled: boolean
@@ -121,6 +133,17 @@ export interface ExportJobResponse {
   output_path: string | null; log_path: string | null; error_message: string | null
   has_gaps: boolean; actual_duration_seconds: number | null
   created_at: string; started_at: string | null; completed_at: string | null
+}
+
+export type PreviewHealth = 'healthy' | 'down' | 'unknown'
+
+export interface HlsPreviewStatusResponse {
+  channel_id: string
+  running: boolean
+  pid: number | null
+  started_at: string | null
+  playlist_url: string | null
+  health: PreviewHealth
 }
 
 // ── Auth — Phase 4 ───────────────────────────────────────────────────────────

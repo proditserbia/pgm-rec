@@ -1,61 +1,68 @@
 """
-Preview API — v1.
+Preview API — v1 (Phase 5: HLS).
 
 Endpoints (all nested under /api/v1/channels/{channel_id}):
 
-  POST /preview/start    — start the preview process
-  POST /preview/stop     — stop the preview process
-  GET  /preview/status   — process status + stream URL
-  GET  /preview/stream   — MJPEG streaming endpoint (browser-viewable)
+  POST /preview/start          — start the HLS preview process  (admin only)
+  POST /preview/stop           — stop the HLS preview process   (admin only)
+  GET  /preview/status         — process status + playlist URL  (any role)
+  GET  /preview/playlist.m3u8  — serve HLS playlist             (any role)
+  GET  /preview/{segment}      — serve HLS .ts segment          (any role)
 
-Preview architecture
-────────────────────
+HLS preview architecture (Phase 5)
+────────────────────────────────────
 Each channel runs a separate, low-resource FFmpeg process that:
-- reads from the same dshow/v4l2 input device as recording
-- scales video down to a small resolution (e.g. 320×180)
-- reduces fps (e.g. 5 fps)
+- reads from the same capture device as recording
+- scales video down (default 480×270) and reduces fps (default 10)
 - disables audio
-- writes raw MJPEG frames to stdout (pipe:1)
+- writes HLS output: index.m3u8 + seg*.ts files to
+  data/preview/{channel_id}/
 
-A background daemon thread (_FrameReader) continuously reads the frames
-from the pipe and stores the latest complete JPEG in memory.
+The playlist and segments are served via FastAPI FileResponse endpoints
+protected by JWT authentication (any authenticated role can view).
 
-GET /preview/stream returns a StreamingResponse with
-``Content-Type: multipart/x-mixed-replace; boundary=pgmframe``,
-which is directly viewable in modern browsers via an <img> tag:
-
-  <img src="http://localhost:8000/api/v1/channels/rts1/preview/stream">
-
-The polling interval inside the async generator (0.1 s → 10 fps maximum)
-naturally throttles clients; the actual frame rate is controlled by FFmpeg.
+hls.js (frontend) fetches the playlist via XHR with a Bearer token
+injected by the player component, so auth works end-to-end.
 
 Isolation
-────────────────────
-- Preview failure never affects recording.
-- Stopping preview never stops recording.
-- PreviewManager is entirely separate from ProcessManager.
+────────────────────────────────────
+- HLS preview failure never affects recording.
+- Stopping HLS preview never stops recording.
+- HlsPreviewManager is entirely separate from ProcessManager.
+
+Legacy MJPEG stream endpoint (Phase 2 /preview/stream) is kept for
+backward compatibility but marked as deprecated.
 """
 from __future__ import annotations
 
-import asyncio
+import re
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
+from ...config.settings import get_settings
 from ...db.models import Channel
 from ...db.session import get_db
-from ...models.schemas import ActionResponse, ChannelConfig, PreviewHealth, PreviewStatusResponse, ProcessStatus
-from ...services.preview_manager import get_preview_manager
+from ...models.schemas import (
+    ActionResponse,
+    ChannelConfig,
+    HlsPreviewStatusResponse,
+    PreviewHealth,
+    PreviewStatusResponse,
+    ProcessStatus,
+)
+from ...services.hls_preview_manager import get_hls_preview_manager
+from ...api.v1.deps import AdminDep, AnyRoleDep
 
 router = APIRouter(tags=["preview"])
 
 DbDep = Annotated[Session, Depends(get_db)]
 
-# Boundary string used for multipart MJPEG stream
-_MJPEG_BOUNDARY = "pgmframe"
-_MJPEG_CONTENT_TYPE = f"multipart/x-mixed-replace; boundary={_MJPEG_BOUNDARY}"
+# Allowed segment filename pattern — prevents path traversal
+_SEGMENT_RE = re.compile(r'^[\w\-]+\.ts$')
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -67,31 +74,34 @@ def _get_channel_or_404(channel_id: str, db: Session) -> Channel:
     return ch
 
 
-def _preview_status_response(channel_id: str, channel_name: str) -> PreviewStatusResponse:
-    pm = get_preview_manager()
+def _hls_status_response(channel_id: str) -> HlsPreviewStatusResponse:
+    pm = get_hls_preview_manager()
     status = pm.preview_status(channel_id)
-    return PreviewStatusResponse(
+    return HlsPreviewStatusResponse(
         channel_id=channel_id,
         running=status["running"],
         pid=status["pid"],
         started_at=status["started_at"],
-        stream_url=status["stream_url"],
+        playlist_url=status["playlist_url"],
         health=status["health"],
     )
 
 
-# ─── Routes ───────────────────────────────────────────────────────────────────
+# ─── HLS routes (Phase 5) ─────────────────────────────────────────────────────
 
-@router.post("/channels/{channel_id}/preview/start", response_model=PreviewStatusResponse)
-def start_preview(channel_id: str, db: DbDep):
+@router.post(
+    "/channels/{channel_id}/preview/start",
+    response_model=HlsPreviewStatusResponse,
+)
+def start_preview(channel_id: str, db: DbDep, _: AdminDep):
     """
-    Start the preview process for a channel.
+    Start the HLS preview process for a channel.  Admin only.
 
     The preview is completely isolated from recording.
-    Returns the stream URL once the process has been launched.
+    Returns the playlist URL once the process has been launched.
     """
     ch = _get_channel_or_404(channel_id, db)
-    pm = get_preview_manager()
+    pm = get_hls_preview_manager()
     config = ChannelConfig.model_validate_json(ch.config_json)
     try:
         info = pm.start_preview(channel_id, config)
@@ -100,73 +110,112 @@ def start_preview(channel_id: str, db: DbDep):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to start preview: {exc}")
     status = pm.preview_status(channel_id)
-    return PreviewStatusResponse(
+    return HlsPreviewStatusResponse(
         channel_id=channel_id,
         running=True,
         pid=info.pid,
         started_at=info.started_at,
-        stream_url=status["stream_url"],
+        playlist_url=status["playlist_url"],
         health=info.health,
     )
 
 
-@router.post("/channels/{channel_id}/preview/stop", response_model=PreviewStatusResponse)
-def stop_preview(channel_id: str, db: DbDep):
-    """Stop the preview process for a channel."""
+@router.post(
+    "/channels/{channel_id}/preview/stop",
+    response_model=HlsPreviewStatusResponse,
+)
+def stop_preview(channel_id: str, db: DbDep, _: AdminDep):
+    """Stop the HLS preview process for a channel.  Admin only."""
     _get_channel_or_404(channel_id, db)
-    pm = get_preview_manager()
+    pm = get_hls_preview_manager()
     pm.stop_preview(channel_id)
-    return PreviewStatusResponse(
+    return HlsPreviewStatusResponse(
         channel_id=channel_id,
         running=False,
         health=PreviewHealth.UNKNOWN,
     )
 
 
-@router.get("/channels/{channel_id}/preview/status", response_model=PreviewStatusResponse)
-def get_preview_status(channel_id: str, db: DbDep):
-    """Live preview process status and stream URL."""
-    ch = _get_channel_or_404(channel_id, db)
-    return _preview_status_response(channel_id, ch.name)
+@router.get(
+    "/channels/{channel_id}/preview/status",
+    response_model=HlsPreviewStatusResponse,
+)
+def get_preview_status(channel_id: str, db: DbDep, _: AnyRoleDep):
+    """HLS preview process status and playlist URL.  Any authenticated role."""
+    _get_channel_or_404(channel_id, db)
+    return _hls_status_response(channel_id)
 
 
-@router.get("/channels/{channel_id}/preview/stream")
-async def stream_preview(channel_id: str, db: DbDep):
+@router.get("/channels/{channel_id}/preview/playlist.m3u8")
+def get_hls_playlist(channel_id: str, db: DbDep, _: AnyRoleDep):
     """
-    MJPEG streaming endpoint — browser-viewable.
+    Serve the HLS playlist file.  Any authenticated role.
 
-    Returns a ``multipart/x-mixed-replace`` stream that browsers can render
-    directly in an ``<img>`` tag:
-
-      <img src="/api/v1/channels/rts1/preview/stream">
-
-    The generator polls for the latest JPEG frame every 100 ms.  If the
-    preview process is not running, a 503 is returned immediately.
-    When the client disconnects, the generator exits cleanly.
+    Returns 503 if the preview process is not running or the playlist
+    has not been created yet.
     """
     _get_channel_or_404(channel_id, db)
-    pm = get_preview_manager()
-
-    if not pm.is_running(channel_id):
+    pm = get_hls_preview_manager()
+    output_dir = pm.get_output_dir(channel_id)
+    playlist = output_dir / "index.m3u8"
+    if not playlist.exists():
         raise HTTPException(
             status_code=503,
-            detail=f"Preview for channel '{channel_id}' is not running. "
-                   f"Start it first via POST /channels/{channel_id}/preview/start",
+            detail=(
+                f"HLS playlist for channel '{channel_id}' is not available. "
+                f"Start preview first via POST /channels/{channel_id}/preview/start"
+            ),
+        )
+    return FileResponse(
+        path=str(playlist),
+        media_type="application/vnd.apple.mpegurl",
+        headers={
+            "Cache-Control": "no-cache, no-store",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
+
+
+@router.get("/channels/{channel_id}/preview/{segment}")
+def get_hls_segment(channel_id: str, segment: str, db: DbDep, _: AnyRoleDep):
+    """
+    Serve a single HLS .ts segment file.  Any authenticated role.
+
+    The segment name must match ``^[\\w\\-]+\\.ts$`` to prevent path traversal.
+    Returns 404 if the segment does not exist.
+    """
+    _get_channel_or_404(channel_id, db)
+
+    if not _SEGMENT_RE.match(segment):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid segment name: '{segment}'.",
         )
 
-    async def _generate():
-        """Async generator that yields MJPEG multipart frames."""
-        while True:
-            frame = pm.get_latest_frame(channel_id)
-            if frame:
-                yield (
-                    f"--{_MJPEG_BOUNDARY}\r\n"
-                    f"Content-Type: image/jpeg\r\n"
-                    f"Content-Length: {len(frame)}\r\n\r\n"
-                ).encode()
-                yield frame
-                yield b"\r\n"
-            # Yield control and wait ~100 ms before next frame
-            await asyncio.sleep(0.1)
+    pm = get_hls_preview_manager()
+    output_dir = pm.get_output_dir(channel_id)
+    segment_path = output_dir / segment
 
-    return StreamingResponse(_generate(), media_type=_MJPEG_CONTENT_TYPE)
+    # Extra safety: resolve and verify the path stays inside output_dir
+    try:
+        resolved = segment_path.resolve()
+        output_dir_resolved = output_dir.resolve()
+        if not str(resolved).startswith(str(output_dir_resolved)):
+            raise HTTPException(status_code=400, detail="Invalid segment path.")
+    except OSError:
+        raise HTTPException(status_code=404, detail="Segment not found.")
+
+    if not segment_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Segment '{segment}' not found for channel '{channel_id}'.",
+        )
+    return FileResponse(
+        path=str(segment_path),
+        media_type="video/MP2T",
+        headers={
+            "Cache-Control": "no-cache, no-store",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
+

@@ -103,6 +103,10 @@ class Settings(BaseSettings):
     admin_username: str = "admin"
     admin_password: str = "pgmrec-admin"
 
+    # Phase 5 — HLS Browser Preview
+    # Root directory for per-channel HLS output (index.m3u8 + .ts segments)
+    preview_dir: Path = _BASE_DIR / "data" / "preview"
+
 
 _settings: Settings | None = None
 

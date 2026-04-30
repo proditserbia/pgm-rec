@@ -88,12 +88,26 @@ class RetentionConfig(BaseModel):
 
 
 class PreviewConfig(BaseModel):
-    """Preview stream configuration (rts1_preview.bat)."""
+    """
+    Preview stream configuration — Phase 5: HLS.
+
+    HLS fields were added in Phase 5; legacy MJPEG fields are kept for
+    backward-compatibility with older JSON configs.
+    """
 
     enabled: bool = False
+    # ── Legacy MJPEG fields (Phase 2 — kept for JSON backward compat) ─────
     port: int = 23001
     scale: str = "320:180"
     fps: int = 5
+    # ── HLS fields (Phase 5) ───────────────────────────────────────────────
+    width: int = 480
+    height: int = 270
+    hls_fps: int = 10
+    video_bitrate: str = "400k"
+    encoder: str = "libx264"
+    segment_time: int = 2
+    list_size: int = 5
 
 
 class ChannelConfig(BaseModel):
@@ -274,6 +288,17 @@ class PreviewStatusResponse(BaseModel):
     pid: Optional[int] = None
     started_at: Optional[datetime] = None
     stream_url: Optional[str] = None
+    health: PreviewHealth = PreviewHealth.UNKNOWN
+
+
+class HlsPreviewStatusResponse(BaseModel):
+    """Live status of the HLS preview process for one channel — Phase 5."""
+
+    channel_id: str
+    running: bool
+    pid: Optional[int] = None
+    started_at: Optional[datetime] = None
+    playlist_url: Optional[str] = None
     health: PreviewHealth = PreviewHealth.UNKNOWN
 
 
