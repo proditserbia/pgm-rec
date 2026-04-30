@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
 from typing import Optional
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BASE_DIR = Path(__file__).parent.parent.parent.resolve()  # backend/
@@ -209,6 +211,59 @@ class Settings(BaseSettings):
     # Channel JSON can then use: "paths": {"record_dir": "rts1/1_record", ...}
     # Effective path becomes: D:\AutoRec\record\rts1\1_record
     recording_root: Optional[Path] = None
+
+    # ── .env / database_url validation ────────────────────────────────────────
+
+    @model_validator(mode="after")
+    def _validate_database_url(self) -> "Settings":
+        """
+        Validate PGMREC_DATABASE_URL at startup.
+
+        1. If the URL points to a SQLite file whose parent directory does not
+           exist, create the directory automatically so that the DB can be
+           initialised without manual setup.
+
+        2. If the URL contains a Linux-style absolute path (starting with ``/``)
+           while running on Windows, emit a CRITICAL warning so the operator
+           knows the path will not resolve correctly.
+        """
+        url = self.database_url
+
+        # ── SQLite: extract the file path ──────────────────────────────────
+        sqlite_path: str | None = None
+        if url.startswith("sqlite:///"):
+            # sqlite:///relative/path  or  sqlite:////abs/path (Unix)
+            # sqlite:///C:/Windows/path (Windows — 3 slashes + drive letter)
+            sqlite_path = url[len("sqlite:///"):]
+        elif url.startswith("sqlite://"):
+            # sqlite:///:memory: — no file path
+            pass
+
+        if sqlite_path and sqlite_path not in (":memory:", ""):
+            db_file = Path(sqlite_path)
+            parent = db_file.parent
+            if not parent.exists():
+                try:
+                    parent.mkdir(parents=True, exist_ok=True)
+                    _logger.info(
+                        "Config: created missing SQLite parent directory: %s", parent
+                    )
+                except OSError as exc:
+                    raise ValueError(
+                        f"PGMREC_DATABASE_URL points to '{db_file}' but the parent "
+                        f"directory '{parent}' does not exist and could not be created: {exc}"
+                    ) from exc
+
+            # ── Windows + Linux path check ─────────────────────────────────
+            if sys.platform == "win32" and db_file.as_posix().startswith("/"):
+                _logger.critical(
+                    "⚠️  CONFIG ERROR: PGMREC_DATABASE_URL contains a Linux-style path "
+                    "('%s') but you are running on Windows.  "
+                    "Use a Windows path like 'sqlite:///C:/pgmrec/pgmrec.db' instead.",
+                    sqlite_path,
+                )
+
+        return self
 
 
 _settings: Settings | None = None

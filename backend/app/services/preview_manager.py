@@ -45,12 +45,13 @@ import subprocess
 import sys
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from ..config.settings import get_settings
 from ..models.schemas import ChannelConfig, PreviewHealth
+from ..utils import utc_now
 from .ffmpeg_builder import build_preview_command, format_command_for_log
 
 logger = logging.getLogger(__name__)
@@ -193,7 +194,7 @@ class PreviewManager:
         settings = get_settings()
         log_dir = settings.logs_dir / "channels" / channel_id
         log_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        ts = utc_now().strftime("%Y%m%d-%H%M%S")
         return log_dir / f"preview-{ts}.log"
 
     def _reap_if_dead(self, channel_id: str) -> None:
@@ -250,7 +251,7 @@ class PreviewManager:
         cmd = build_preview_command(config)
         log_path = self._new_log_path(channel_id)
 
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = utc_now().isoformat()
         with open(log_path, "w", encoding="utf-8") as lf:
             lf.write(f"[{now_iso}] PREVIEW COMMAND: {format_command_for_log(cmd)}\n")
             lf.write(f"[{now_iso}] STARTING\n")
@@ -277,7 +278,7 @@ class PreviewManager:
         reader = _FrameReader(process, channel_id)
         reader.start()
 
-        started_at = datetime.now(timezone.utc)
+        started_at = utc_now()
         info = PreviewInfo(
             channel_id=channel_id,
             pid=process.pid,

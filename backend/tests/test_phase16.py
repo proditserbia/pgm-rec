@@ -16,7 +16,7 @@ Covers:
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -50,7 +50,7 @@ def _make_info(channel_id: str = "test") -> ProcessInfo:
         channel_id=channel_id,
         pid=9999,
         log_path=Path("/tmp/test.log"),
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.utcnow(),
         process=None,
     )
 
@@ -113,10 +113,9 @@ def test_restart_history_count_in_window():
 
 
 def test_restart_history_window_excludes_old():
-    from datetime import timedelta
     h = _RestartHistory()
     # Manually inject an old timestamp
-    h._timestamps.append(datetime.now(timezone.utc) - timedelta(seconds=400))
+    h._timestamps.append(datetime.utcnow() - timedelta(seconds=400))
     h.record_attempt()  # recent
     # Window of 300s should only count the recent one
     assert h.count_in_window(300) == 1
@@ -146,9 +145,9 @@ def test_restart_history_last_restart_time_none_when_empty():
 
 def test_restart_history_last_restart_time_after_attempt():
     h = _RestartHistory()
-    before = datetime.now(timezone.utc)
+    before = datetime.utcnow()
     h.record_attempt()
-    after = datetime.now(timezone.utc)
+    after = datetime.utcnow()
     lrt = h.last_restart_time()
     assert lrt is not None
     assert before <= lrt <= after

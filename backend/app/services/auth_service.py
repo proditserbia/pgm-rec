@@ -8,7 +8,7 @@ Responsibilities:
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from ..config.settings import get_settings
 from ..db.models import User
+from ..utils import utc_now
 
 _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -34,7 +35,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 def create_access_token(username: str, role: str) -> str:
     settings = get_settings()
-    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expire_minutes)
+    expire = utc_now() + timedelta(minutes=settings.jwt_expire_minutes)
     payload = {
         "sub": username,
         "role": role,

@@ -37,13 +37,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from ..config.settings import get_settings, resolve_channel_path
 from ..db.models import Channel, SegmentAnomaly, WatchdogEvent
 from ..db.session import get_session_factory
 from ..models.schemas import ChannelConfig
+from ..utils import utc_now
 from .process_manager import get_process_manager
 
 logger = logging.getLogger(__name__)
@@ -279,7 +280,7 @@ async def _check_channel(
 
     file_age = time.time() - newest_mtime
     if file_age > max_age:
-        last_seg_ts = datetime.fromtimestamp(newest_mtime, tz=timezone.utc)
+        last_seg_ts = datetime.utcfromtimestamp(newest_mtime)
         with SessionLocal() as db:
             _log_event(
                 db, channel_id, "no_new_files",
@@ -314,7 +315,7 @@ async def _check_channel(
                 )
                 _log_segment_anomaly(
                     db, channel_id,
-                    datetime.fromtimestamp(newest_mtime, tz=timezone.utc),
+                    datetime.utcfromtimestamp(newest_mtime),
                     segment_seconds,
                     stall_secs,
                 )
@@ -357,7 +358,7 @@ async def run_watchdog() -> None:
                 continue
             config = ChannelConfig.model_validate_json(channel.config_json)
 
-            now = datetime.now(timezone.utc)
+            now = utc_now()
             uptime = (now - info.started_at).total_seconds()
             await _check_channel(channel_id, config, uptime)
 

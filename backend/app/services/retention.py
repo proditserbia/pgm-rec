@@ -26,13 +26,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from ..config.settings import get_settings, resolve_channel_path
 from ..db.models import Channel, RestartHistoryRecord, SegmentAnomaly, WatchdogEvent
 from ..db.session import get_session_factory
 from ..models.schemas import ChannelConfig
+from ..utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,7 @@ def _prune_event_tables() -> None:
     if retention_days <= 0:
         return
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    cutoff = utc_now() - timedelta(days=retention_days)
     SessionLocal = get_session_factory()
 
     try:
@@ -113,7 +114,7 @@ def _prune_event_tables() -> None:
                 .delete(synchronize_session=False)
             )
             # Restart history only needs to cover the backoff window + a margin
-            rh_cutoff = datetime.now(timezone.utc) - timedelta(
+            rh_cutoff = utc_now() - timedelta(
                 seconds=settings.restart_backoff_window_seconds * 2
             )
             rh_deleted = (

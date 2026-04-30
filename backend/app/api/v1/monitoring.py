@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import shutil
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -89,7 +89,7 @@ def _newest_mp4_mtime(record_dir: str) -> datetime | None:
         if not mp4s:
             return None
         mtime = max(f.stat().st_mtime for f in mp4s)
-        return datetime.fromtimestamp(mtime, tz=timezone.utc)
+        return datetime.utcfromtimestamp(mtime)
     except OSError:
         return None
 

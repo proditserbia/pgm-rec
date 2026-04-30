@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date as _date
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -46,6 +46,7 @@ from ...models.schemas import (
 )
 from ...services.export_worker import get_export_worker
 from ...services.manifest_service import resolve_export_range
+from ...utils import utc_now
 from .deps import ExportDep
 
 logger = logging.getLogger(__name__)
@@ -120,7 +121,7 @@ def _validate_export_request(body: ExportJobRequest) -> None:
             detail=f"Invalid date format '{body.date}'. Expected YYYY-MM-DD.",
         )
 
-    today = datetime.now(timezone.utc).date()
+    today = utc_now().date()
     if req_date > today:
         raise HTTPException(
             status_code=400,
@@ -356,7 +357,7 @@ def cancel_export_job(
     get_export_worker().cancel_job(job_id)
 
     job.status = ExportJobStatus.CANCELLED
-    job.completed_at = datetime.now(timezone.utc)
+    job.completed_at = utc_now()
     db.commit()
     db.refresh(job)
 

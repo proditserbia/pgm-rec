@@ -57,12 +57,13 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from ..config.settings import get_settings, resolve_channel_path
 from ..models.schemas import ChannelConfig, PreviewHealth
+from ..utils import utc_now
 from .ffmpeg_builder import (
     build_hls_preview_command,
     build_hls_preview_from_file_command,
@@ -259,7 +260,7 @@ class HlsPreviewManager:
         settings = get_settings()
         log_dir = settings.logs_dir / "channels" / channel_id
         log_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        ts = utc_now().strftime("%Y%m%d-%H%M%S")
         return log_dir / f"hls-preview-{ts}.log"
 
     def _output_dir(self, channel_id: str) -> Path:
@@ -291,7 +292,7 @@ class HlsPreviewManager:
                 self._failures[channel_id] = HlsPreviewFailure(
                     reason=reason,
                     log_path=info.log_path,
-                    failed_at=datetime.now(timezone.utc),
+                    failed_at=utc_now(),
                 )
                 logger.warning(
                     "[hls-preview][%s] Process PID %d exited without playlist (code=%s).",
@@ -313,7 +314,7 @@ class HlsPreviewManager:
         if info is None:
             return
         timeout = get_settings().preview_startup_timeout_seconds
-        elapsed = (datetime.now(timezone.utc) - info.started_at).total_seconds()
+        elapsed = (utc_now() - info.started_at).total_seconds()
         playlist = info.output_dir / "index.m3u8"
         if elapsed > timeout and not _playlist_has_segment(playlist):
             tail = _tail_file(info.log_path, 20)
@@ -330,7 +331,7 @@ class HlsPreviewManager:
             self._failures[channel_id] = HlsPreviewFailure(
                 reason=reason,
                 log_path=info.log_path,
-                failed_at=datetime.now(timezone.utc),
+                failed_at=utc_now(),
             )
             logger.warning(
                 "[hls-preview][%s] Startup timeout — stopping preview PID %d.",
@@ -431,7 +432,7 @@ class HlsPreviewManager:
         cmd = build_hls_preview_command(config, output_dir)
         log_path = self._new_log_path(channel_id)
 
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = utc_now().isoformat()
         with open(log_path, "w", encoding="utf-8") as lf:
             lf.write(f"[{now_iso}] HLS PREVIEW COMMAND: {format_command_for_log(cmd)}\n")
             lf.write(f"[{now_iso}] STARTING\n")
@@ -455,7 +456,7 @@ class HlsPreviewManager:
         finally:
             log_fh.close()
 
-        started_at = datetime.now(timezone.utc)
+        started_at = utc_now()
         info = HlsPreviewInfo(
             channel_id=channel_id,
             pid=process.pid,
@@ -617,7 +618,7 @@ class HlsPreviewManager:
         cmd = build_hls_preview_from_file_command(config, source_file, output_dir)
         log_path = self._new_log_path(channel_id)
 
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = utc_now().isoformat()
         with open(log_path, "w", encoding="utf-8") as lf:
             lf.write(
                 f"[{now_iso}] HLS PREVIEW FROM FILE: {source_file}\n"
@@ -645,7 +646,7 @@ class HlsPreviewManager:
         finally:
             log_fh.close()
 
-        started_at = datetime.now(timezone.utc)
+        started_at = utc_now()
         info = HlsPreviewInfo(
             channel_id=channel_id,
             pid=process.pid,
@@ -703,7 +704,7 @@ class HlsPreviewManager:
             self._failures[channel_id] = HlsPreviewFailure(
                 reason=f"Failed to restart preview with {new_file.name}: {exc}",
                 log_path=None,
-                failed_at=datetime.now(timezone.utc),
+                failed_at=utc_now(),
             )
 
     def _handle_file_mode_process_exit(
@@ -744,7 +745,7 @@ class HlsPreviewManager:
                 self._failures[channel_id] = HlsPreviewFailure(
                     reason=f"Restart after file end failed: {exc}",
                     log_path=old_info.log_path,
-                    failed_at=datetime.now(timezone.utc),
+                    failed_at=utc_now(),
                 )
         else:
             # No segment available — go back to pending.
@@ -793,7 +794,7 @@ class HlsPreviewManager:
                     self._failures[channel_id] = HlsPreviewFailure(
                         reason=f"Failed to start from file: {exc}",
                         log_path=None,
-                        failed_at=datetime.now(timezone.utc),
+                        failed_at=utc_now(),
                     )
 
         # ── Handle running previews ────────────────────────────────────────

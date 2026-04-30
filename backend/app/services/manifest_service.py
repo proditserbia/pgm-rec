@@ -51,6 +51,7 @@ from ..models.schemas import (
     SegmentSlice,
     SegmentStatus,
 )
+from ..utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -76,26 +77,32 @@ def _get_timezone(tz_name: str):
 
 def _localize(naive_dt: datetime, tz_name: str) -> datetime:
     """
-    Attach *tz_name* timezone info to a naive *naive_dt* and convert to UTC.
+    Convert a naive *naive_dt* (assumed to be in *tz_name* local time) to naive UTC.
 
-    If the timezone cannot be loaded, the naive datetime is treated as UTC.
+    If the timezone cannot be loaded, the naive datetime is treated as UTC and
+    returned unchanged.
     """
     tz = _get_timezone(tz_name)
     if tz is not None:
-        return naive_dt.replace(tzinfo=tz).astimezone(timezone.utc)
-    return naive_dt.replace(tzinfo=timezone.utc)
+        return naive_dt.replace(tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None)
+    return naive_dt  # already UTC, already naive
 
 
 def _to_local_date_str(utc_dt: datetime, tz_name: str) -> str:
     """
     Return the YYYY-MM-DD string for *utc_dt* expressed in *tz_name*.
 
-    Used to decide which daily manifest file a segment belongs to.
+    *utc_dt* is naive UTC.  We attach UTC tzinfo explicitly before calling
+    ``astimezone()`` so Python converts correctly (rather than assuming the
+    local system timezone).
+
     Falls back to UTC date if the timezone cannot be loaded.
     """
     tz = _get_timezone(tz_name)
     if tz is not None:
-        local_dt = utc_dt.astimezone(tz)
+        # Attach UTC tzinfo so astimezone() converts correctly from UTC
+        aware_utc = utc_dt.replace(tzinfo=timezone.utc) if utc_dt.tzinfo is None else utc_dt
+        local_dt = aware_utc.astimezone(tz)
     else:
         local_dt = utc_dt
     return local_dt.strftime("%Y-%m-%d")
@@ -343,7 +350,7 @@ def register_segment(
     except OSError:
         size_bytes = 0
 
-    now_utc = datetime.now(timezone.utc)
+    now_utc = utc_now()
 
     # ── 6. Upsert SegmentRecord in DB ──────────────────────────────────────
     db_record = (
