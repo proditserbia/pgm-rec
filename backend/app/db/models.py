@@ -171,3 +171,36 @@ class ManifestGap(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
 
     channel: Mapped["Channel"] = relationship(back_populates="manifest_gaps")
+
+
+class ExportJob(Base):
+    """
+    An asynchronous video export job — Phase 2B.
+
+    Lifecycle: queued → running → completed | failed | cancelled
+
+    The job stores everything needed to reproduce the export (channel, date,
+    time range) and track its progress.  Output files live under
+    data/exports/{channel_id}/{date}/.
+    """
+
+    __tablename__ = "export_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # channel_id is stored as a plain indexed string — no FK so export history
+    # survives channel deletions or renames.
+    channel_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    date: Mapped[str] = mapped_column(String(10), nullable=False)       # YYYY-MM-DD
+    in_time: Mapped[str] = mapped_column(String(8), nullable=False)     # HH:MM:SS
+    out_time: Mapped[str] = mapped_column(String(8), nullable=False)    # HH:MM:SS
+    # "queued" | "running" | "completed" | "failed" | "cancelled"
+    status: Mapped[str] = mapped_column(String(32), default="queued", nullable=False, index=True)
+    progress_percent: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    output_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    log_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # True if gaps were detected in the resolved range (warning, not a blocker)
+    has_gaps: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

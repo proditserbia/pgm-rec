@@ -7,6 +7,13 @@ Phase 2A: Recording Manifest & Export Index Layer.
   - Segment registration triggered by file_mover (ffprobe + gap detection)
   - DB index: SegmentRecord + ManifestGap tables
   - Manifest API: GET /manifests/{date}, GET /segments, POST /exports/resolve-range
+
+Phase 2B: Export Engine.
+  - ExportJob table tracks asynchronous export jobs
+  - export_service.py: FFmpeg stream-copy + re-encode fallback
+  - export_worker.py: async polling worker (configurable concurrency)
+  - Export API: POST /channels/{id}/exports, GET /exports/{id}, GET /exports,
+                POST /exports/{id}/cancel
 """
 from __future__ import annotations
 
@@ -21,6 +28,7 @@ from .config.settings import get_settings
 from .db.models import Channel
 from .db.session import get_session_factory, init_db
 from .models.schemas import ChannelConfig
+from .services.export_worker import get_export_worker
 from .services.file_mover import run_file_mover
 from .services.preview_manager import run_preview_watchdog_loop
 from .services.process_manager import get_process_manager
@@ -28,6 +36,7 @@ from .services.retention import run_retention
 from .services.scheduler import get_scheduler
 from .services.watchdog import run_watchdog_loop
 from .api.v1 import channels as channels_router
+from .api.v1 import exports as exports_router
 from .api.v1 import manifests as manifests_router
 from .api.v1 import monitoring as monitoring_router
 from .api.v1 import preview as preview_router
@@ -86,7 +95,10 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
 
     # Ensure required directories exist
-    for directory in (settings.data_dir, settings.logs_dir, settings.channels_config_dir, settings.manifests_dir):
+    for directory in (
+        settings.data_dir, settings.logs_dir, settings.channels_config_dir,
+        settings.manifests_dir, settings.exports_dir, settings.export_logs_dir,
+    ):
         directory.mkdir(parents=True, exist_ok=True)
 
     # Create DB tables (idempotent — safe on every restart)
@@ -117,6 +129,11 @@ async def lifespan(app: FastAPI):
         run_preview_watchdog_loop(), name="pgmrec-preview-watchdog"
     )
 
+    # ── Export worker — independent asyncio Task ───────────────────────────
+    # Polls the DB for QUEUED export jobs and runs them with bounded concurrency.
+    export_worker = get_export_worker()
+    export_worker.start()
+
     # ── Shared scheduler: file mover + retention ─────────────────────────
     scheduler = get_scheduler()
     scheduler.add(
@@ -146,6 +163,7 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
 
+    await export_worker.stop()
     await scheduler.stop()
     logger.info("PGMRec shutting down.")
 
@@ -160,7 +178,8 @@ def create_app() -> FastAPI:
         version=settings.app_version,
         description=(
             "Broadcast-grade recording and compliance system. "
-            "Phase 2: multi-channel support (rts1/rts2/rts3/rts_test) + preview foundation."
+            "Phase 2B: Export Engine — manifest-driven async video exports "
+            "with stream-copy and re-encode fallback."
         ),
         lifespan=lifespan,
     )
@@ -177,6 +196,7 @@ def create_app() -> FastAPI:
     app.include_router(monitoring_router.router, prefix="/api/v1")
     app.include_router(preview_router.router, prefix="/api/v1")
     app.include_router(manifests_router.router, prefix="/api/v1")
+    app.include_router(exports_router.router, prefix="/api/v1")
 
     @app.get("/health", tags=["system"])
     def health():

@@ -74,6 +74,16 @@ class Settings(BaseSettings):
     # Gaps smaller than this threshold (seconds) are silently ignored.
     manifest_gap_tolerance_seconds: float = 10.0
 
+    # Phase 2B — Export Engine
+    # Root directory for exported video files
+    exports_dir: Path = _BASE_DIR / "data" / "exports"
+    # Root directory for per-job export FFmpeg logs
+    export_logs_dir: Path = _BASE_DIR / "logs" / "exports"
+    # Maximum number of export jobs that may run concurrently
+    max_concurrent_exports: int = 2
+    # Number of threads FFmpeg may use per export job (0 = auto)
+    export_ffmpeg_threads: int = 0
+
 
 _settings: Settings | None = None
 

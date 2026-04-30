@@ -361,3 +361,42 @@ class ResolveRangeResponse(BaseModel):
     export_duration_seconds: float
     has_gaps: bool
     gaps: list[GapEntry]
+
+
+# ─── Export Engine models — Phase 2B ─────────────────────────────────────────
+
+class ExportJobStatus(str, Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class ExportJobRequest(BaseModel):
+    """Request body for POST /channels/{id}/exports."""
+
+    date: str     # YYYY-MM-DD
+    in_time: str  # HH:MM:SS  (UTC)
+    out_time: str # HH:MM:SS  (UTC)
+    # If True, create the job even when gaps are detected in the resolved range
+    allow_gaps: bool = True
+
+
+class ExportJobResponse(BaseModel):
+    """API representation of an ExportJob row."""
+
+    id: int
+    channel_id: str
+    date: str
+    in_time: str
+    out_time: str
+    status: ExportJobStatus
+    progress_percent: float
+    output_path: Optional[str] = None
+    log_path: Optional[str] = None
+    error_message: Optional[str] = None
+    has_gaps: bool
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None

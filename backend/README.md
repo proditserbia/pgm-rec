@@ -1,6 +1,6 @@
 # PGMRec — Backend
 
-Broadcast-grade recording control system — Phase 1 backend.
+Broadcast-grade recording control system — Phase 2B: Export Engine.
 
 ## Requirements
 
@@ -40,12 +40,26 @@ All variables are prefixed with `PGMREC_`.
 | `PGMREC_LOGS_DIR` | `backend/logs` | FFmpeg log output directory |
 | `PGMREC_STOP_TIMEOUT_SECONDS` | `15` | Seconds to wait for SIGTERM before SIGKILL |
 | `PGMREC_DEBUG` | `false` | Enable debug logging |
+| `PGMREC_MANIFESTS_DIR` | `backend/data/manifests` | Per-channel daily JSON manifests |
+| `PGMREC_MANIFEST_TIMEZONE` | `Europe/Belgrade` | IANA timezone for segment filenames |
+| `PGMREC_MANIFEST_GAP_TOLERANCE_SECONDS` | `10.0` | Gaps smaller than this are ignored |
+| `PGMREC_EXPORTS_DIR` | `backend/data/exports` | Exported video file output directory |
+| `PGMREC_EXPORT_LOGS_DIR` | `backend/logs/exports` | Per-job FFmpeg export logs |
+| `PGMREC_MAX_CONCURRENT_EXPORTS` | `2` | Maximum simultaneous export jobs |
+| `PGMREC_EXPORT_FFMPEG_THREADS` | `0` | FFmpeg threads per export (0 = auto) |
 
-## API endpoints (Phase 1)
+## API endpoints
+
+### System
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Liveness probe |
+
+### Channels (Phase 1)
+
+| Method | Path | Description |
+|---|---|---|
 | `GET` | `/api/v1/channels/` | List all channels with live status |
 | `GET` | `/api/v1/channels/{id}` | Channel detail + config + status |
 | `GET` | `/api/v1/channels/{id}/status` | Live PID / uptime |
@@ -56,48 +70,93 @@ All variables are prefixed with `PGMREC_`.
 | `GET` | `/api/v1/channels/{id}/command` | Preview FFmpeg command (dry-run) |
 | `GET` | `/api/v1/channels/{id}/history?limit=20` | Recent process records |
 
+### Manifest & Export Index (Phase 2A)
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/channels/{id}/manifests/{date}` | Daily JSON manifest for a channel |
+| `GET` | `/api/v1/channels/{id}/segments?date=YYYY-MM-DD` | Segment list from DB for a date |
+| `POST` | `/api/v1/channels/{id}/exports/resolve-range` | Resolve export range (no video yet) |
+
+### Export Engine (Phase 2B)
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/v1/channels/{id}/exports` | Create and queue a new export job |
+| `GET` | `/api/v1/exports/{job_id}` | Get export job status / progress |
+| `GET` | `/api/v1/exports?channel_id=&status=&limit=` | List export jobs |
+| `POST` | `/api/v1/exports/{job_id}/cancel` | Cancel a queued or running job |
+
+## Export flow (Phase 2B)
+
+```
+POST /channels/rts1/exports  {"date":"2026-04-01","in_time":"14:05:30","out_time":"14:22:10"}
+  │
+  ├─ validate range via resolve_export_range() (Phase 2A manifest/DB)
+  ├─ create ExportJob (status=queued) in DB
+  ├─ wake export_worker
+  │
+  └─ ExportWorker (background asyncio task)
+       │
+       ├─ acquire concurrency semaphore (max_concurrent_exports)
+       ├─ run_export_job(job_id)
+       │    ├─ resolve range → segment list + first_segment_offset
+       │    ├─ check all segment files exist on disk
+       │    ├─ build output path: data/exports/{channel}/{date}/{name}.mp4
+       │    ├─ strategy A — single segment:
+       │    │     ffmpeg -ss <offset> -i <file> -t <duration> -c copy output.mp4
+       │    ├─ strategy B — multi-segment (concat demuxer):
+       │    │     write ffconcat file with inpoint/outpoint directives
+       │    │     ffmpeg -f concat -safe 0 -i concat.txt -c copy output.mp4
+       │    ├─ fallback — if stream copy fails:
+       │    │     ffmpeg ... -c:v libx264 -preset veryfast -c:a aac output.mp4
+       │    ├─ capture stderr → logs/exports/{channel}/{date}/export_{id}.log
+       │    └─ update progress_percent from FFmpeg time= lines
+       │
+       └─ mark job completed / failed / cancelled in DB
+```
+
 ## Channel configuration
 
 Channel configs live in `data/channels/*.json` and are seeded into the DB
 on first startup.  Editing the JSON and restarting the server does **not**
 overwrite DB records — delete the DB file to re-seed from JSON.
 
-## FFmpeg command generated for RTS1
-
-Equivalent of `record_rts1.bat`:
-
-```
-C:\AutoRec\ffmpeg\bin\ffmpeg.exe
-  -f dshow -s 720x576 -framerate 25
-  -i video=Decklink Video Capture:audio=Decklink Audio Capture
-  -b:v 1500k -b:a 128k
-  -vf drawtext=fontsize=13:fontcolor=black:box=1:boxcolor=white@0.4:
-       fontfile='C\:\\Windows\\Fonts\\verdana.ttf':
-       text='%{localtime\:%d\-%m\-%y %H\:%M\:%S}':x=(w-tw)/30:y=(h-th)/20,
-       scale=1024:576,yadif
-  -f stream_segment -segment_time 00:05:00
-  -segment_atclocktime 1 -reset_timestamps 1 -strftime 1
-  -c:v libx264 -preset veryfast
-  D:\AutoRec\record\rts1\1_record\%d%m%y-%H%M%S.mp4
-```
-
 ## Project structure
 
 ```
 backend/
 ├── app/
-│   ├── main.py                   FastAPI app + lifespan (seed + reconcile)
-│   ├── config/settings.py        App settings (env-overridable via PGMREC_*)
-│   ├── models/schemas.py         Pydantic channel config + API response models
+│   ├── main.py                    FastAPI app + lifespan
+│   ├── config/settings.py         App settings (env-overridable via PGMREC_*)
+│   ├── models/schemas.py          Pydantic config + API response models
 │   ├── db/
-│   │   ├── models.py             SQLAlchemy ORM (channels, process_records)
-│   │   └── session.py            Engine, session factory, get_db dependency
+│   │   ├── models.py              SQLAlchemy ORM (all tables)
+│   │   └── session.py             Engine, session factory, get_db dependency
 │   ├── services/
-│   │   ├── ffmpeg_builder.py     FFmpeg arg-list builder (shell=False safe)
-│   │   └── process_manager.py   PID-based process lifecycle manager
-│   └── api/v1/channels.py       REST routes
-├── data/channels/rts1.json       RTS1 channel config (seeded on first run)
-├── logs/                         FFmpeg stderr logs (per channel, timestamped)
+│   │   ├── ffmpeg_builder.py      FFmpeg arg-list builder (shell=False safe)
+│   │   ├── process_manager.py     PID-based process lifecycle manager
+│   │   ├── watchdog.py            File/process health watchdog
+│   │   ├── file_mover.py          Moves completed segments 1_record → 2_chunks
+│   │   ├── retention.py           Age-based file retention cleanup
+│   │   ├── scheduler.py           Interval task scheduler
+│   │   ├── preview_manager.py     Preview stream manager (Phase 2)
+│   │   ├── manifest_service.py    Manifest write/read, register_segment (Phase 2A)
+│   │   ├── export_service.py      FFmpeg export logic (Phase 2B)
+│   │   └── export_worker.py       Async export job worker (Phase 2B)
+│   └── api/v1/
+│       ├── channels.py            Recording control endpoints
+│       ├── monitoring.py          Health / watchdog endpoints
+│       ├── preview.py             Preview stream endpoints
+│       ├── manifests.py           Manifest + range-resolver endpoints (Phase 2A)
+│       └── exports.py             Export job CRUD endpoints (Phase 2B)
+├── data/
+│   ├── channels/*.json            Channel configs (seeded on first run)
+│   ├── manifests/{ch}/{date}.json Daily recording manifests (Phase 2A)
+│   └── exports/{ch}/{date}/*.mp4  Exported video files (Phase 2B)
+├── logs/
+│   ├── channels/{id}/             FFmpeg recording logs
+│   └── exports/{ch}/{date}/       Per-job FFmpeg export logs (Phase 2B)
 └── requirements.txt
 ```
 
