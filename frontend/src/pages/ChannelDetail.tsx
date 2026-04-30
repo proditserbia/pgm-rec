@@ -4,10 +4,11 @@ import {
   getChannel, startChannel, stopChannel, restartChannel,
   getChannelLogs, getChannelCommand, getChannelWatchdog, getChannelAnomalies,
   startPreview, stopPreview, getPreviewStatus,
+  getPreviewLogs, getChannelDiagnostics,
 } from '../api/client'
 import type {
   ChannelDetailResponse, WatchdogEventResponse, SegmentAnomalyResponse,
-  HlsPreviewStatusResponse,
+  HlsPreviewStatusResponse, ChannelDiagnosticsResponse,
 } from '../types'
 import { StatusBadge, HealthBadge } from '../components/Badge'
 import ErrorBanner from '../components/ErrorBanner'
@@ -57,6 +58,14 @@ export default function ChannelDetail() {
   const [previewBusy, setPreviewBusy] = useState(false)
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [showPlayer, setShowPlayer] = useState(false)
+
+  // Phase 9: preview log tail (admin only, on-demand)
+  const [previewLogs, setPreviewLogs] = useState<string[]>([])
+  const [previewLogsOpen, setPreviewLogsOpen] = useState(false)
+
+  // Phase 9: channel diagnostics (admin only, on-demand)
+  const [diagnostics, setDiagnostics] = useState<ChannelDiagnosticsResponse | null>(null)
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
 
   const fetchDetail = useCallback(async () => {
     if (!id) return
@@ -125,7 +134,8 @@ export default function ChannelDetail() {
     try {
       const s = await startPreview(id)
       setPreviewStatus(s)
-      setShowPlayer(true)
+      // Phase 9: do NOT show the player immediately — wait for playlist_ready
+      // (polled via fetchPreviewStatus). This prevents the HLS fatal networkError.
     } catch (e) {
       setPreviewError(e instanceof Error ? e.message : 'Failed to start preview')
     } finally { setPreviewBusy(false) }
@@ -143,6 +153,24 @@ export default function ChannelDetail() {
     } finally { setPreviewBusy(false) }
   }
 
+  async function handleLoadPreviewLogs() {
+    if (!id) return
+    try {
+      const r = await getPreviewLogs(id, 100)
+      setPreviewLogs(r.lines)
+      setPreviewLogsOpen(true)
+    } catch { /* ignore */ }
+  }
+
+  async function handleLoadDiagnostics() {
+    if (!id) return
+    try {
+      const d = await getChannelDiagnostics(id)
+      setDiagnostics(d)
+      setDiagnosticsOpen(true)
+    } catch { /* ignore */ }
+  }
+
   function renderLogLine(line: string, i: number) {
     const lower = line.toLowerCase()
     const cls =
@@ -157,6 +185,8 @@ export default function ChannelDetail() {
 
   const { summary, config, status } = detail
   const previewRunning = previewStatus?.running ?? false
+  const previewReady = previewStatus?.playlist_ready ?? false
+  const previewStartupStatus = previewStatus?.startup_status ?? 'stopped'
 
   return (
     <div className="page">
@@ -211,9 +241,14 @@ export default function ChannelDetail() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{
               fontSize: 12, fontWeight: 600,
-              color: previewRunning ? '#2e7d32' : '#666',
+              color: previewStartupStatus === 'running' ? '#2e7d32'
+                   : previewStartupStatus === 'failed'  ? '#c62828'
+                   : previewStartupStatus === 'starting' ? '#e65100'
+                   : '#666',
             }}>
-              {previewRunning ? '● Running' : '○ Stopped'}
+              {previewStartupStatus === 'running'  ? '● Running'  :
+               previewStartupStatus === 'starting' ? '◌ Starting…' :
+               previewStartupStatus === 'failed'   ? '✕ Failed'   : '○ Stopped'}
             </span>
             {isAdmin && (
               <>
@@ -241,7 +276,29 @@ export default function ChannelDetail() {
 
         {previewError && <ErrorBanner message={previewError} />}
 
-        {previewRunning && !showPlayer && (
+        {/* Starting: waiting for playlist */}
+        {previewStartupStatus === 'starting' && (
+          <div style={{ textAlign: 'center', padding: '16px 0', color: '#e65100', fontSize: 13 }}>
+            Starting preview… waiting for first HLS segment.
+            <br />
+            <span style={{ color: '#888', fontSize: 12 }}>
+              (If this takes longer than 30 seconds, check preview logs below.)
+            </span>
+          </div>
+        )}
+
+        {/* Failed */}
+        {previewStartupStatus === 'failed' && previewStatus?.failed_reason && (
+          <div style={{
+            background: '#fff3f3', border: '1px solid #f5c0c0', borderRadius: 4,
+            padding: '8px 12px', fontSize: 12, color: '#c62828', marginBottom: 8,
+          }}>
+            <strong>Preview failed:</strong> {previewStatus.failed_reason}
+          </div>
+        )}
+
+        {/* Ready: show "Open Player" button or actual player */}
+        {previewReady && !showPlayer && (
           <div style={{ textAlign: 'center', padding: '16px 0' }}>
             <button
               className="btn btn-secondary btn-sm"
@@ -252,14 +309,14 @@ export default function ChannelDetail() {
           </div>
         )}
 
-        {previewRunning && showPlayer && id && (
+        {previewReady && showPlayer && id && (
           <HlsPlayer
             channelId={id}
             onError={msg => setPreviewError(msg)}
           />
         )}
 
-        {!previewRunning && (
+        {previewStartupStatus === 'stopped' && (
           <p className="empty-state" style={{ marginBottom: 0 }}>
             {isAdmin
               ? 'Preview is not running. Click "Start Preview" to begin.'
@@ -273,6 +330,38 @@ export default function ChannelDetail() {
           </div>
         )}
       </div>
+
+      {/* ── Preview Logs (admin) ──────────────────────────────────────────── */}
+      {isAdmin && (previewRunning || previewStartupStatus === 'failed') && (
+      <div className="card">
+        <div
+          className="collapsible-header"
+          onClick={() => {
+            if (!previewLogsOpen) handleLoadPreviewLogs()
+            setPreviewLogsOpen(o => !o)
+          }}
+        >
+          <span>{previewLogsOpen ? '▾' : '▸'}</span> Preview FFmpeg Log Tail
+        </div>
+        {previewLogsOpen && (
+          <>
+            <button
+              className="btn btn-sm btn-secondary"
+              style={{ margin: '6px 0' }}
+              onClick={handleLoadPreviewLogs}
+            >
+              ↻ Refresh
+            </button>
+            {previewLogs.length === 0
+              ? <p className="empty-state">No preview log lines available.</p>
+              : <pre className="log-block" style={{ marginTop: 6, maxHeight: 300 }}>
+                  {previewLogs.map((l, i) => <div key={i}>{l || ' '}</div>)}
+                </pre>
+            }
+          </>
+        )}
+      </div>
+      )}
 
       {/* Config */}
       <div className="card">
@@ -386,6 +475,69 @@ export default function ChannelDetail() {
           )
         }
       </div>
+
+      {/* ── Channel Diagnostics (admin) ───────────────────────────────────── */}
+      {isAdmin && (
+      <div className="card">
+        <div
+          className="collapsible-header"
+          onClick={() => {
+            if (!diagnosticsOpen) handleLoadDiagnostics()
+            setDiagnosticsOpen(o => !o)
+          }}
+        >
+          <span>{diagnosticsOpen ? '▾' : '▸'}</span> Channel Diagnostics
+        </div>
+        {diagnosticsOpen && diagnostics && (
+          <div style={{ marginTop: 10 }}>
+            <div className="card-row">
+              <span className="card-label">Device type</span>
+              <span className="card-value" style={{ fontFamily: 'monospace', fontSize: 12 }}>{diagnostics.device_type}</span>
+            </div>
+            <div className="card-row">
+              <span className="card-label">Input specifier</span>
+              <span className="card-value" style={{ fontFamily: 'monospace', fontSize: 12 }}>{diagnostics.input_specifier}</span>
+            </div>
+            <div className="card-row">
+              <span className="card-label">Resolution / fps</span>
+              <span className="card-value">{diagnostics.resolution} @ {diagnostics.framerate} fps</span>
+            </div>
+            <div className="card-row">
+              <span className="card-label">Record dir</span>
+              <span className="card-value" style={{ fontFamily: 'monospace', fontSize: 12 }}>{diagnostics.record_dir}</span>
+            </div>
+            <div className="card-row">
+              <span className="card-label">Latest segment</span>
+              <span className="card-value" style={{ fontFamily: 'monospace', fontSize: 12 }}>
+                {diagnostics.latest_segment_path
+                  ? `${diagnostics.latest_segment_path} (${diagnostics.latest_segment_size_bytes?.toLocaleString()} bytes)`
+                  : '— none found'}
+              </span>
+            </div>
+            <div className="card-row">
+              <span className="card-label">Latest segment mtime</span>
+              <span className="card-value">{diagnostics.latest_segment_mtime ? fmtDate(diagnostics.latest_segment_mtime) : '—'}</span>
+            </div>
+            <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
+              <strong>Device listing hint (run on recording machine):</strong>
+              <pre className="log-block" style={{ marginTop: 4, maxHeight: 60 }}>{diagnostics.dshow_device_hint}</pre>
+            </div>
+            <div style={{ marginTop: 8, fontSize: 12, fontWeight: 600, color: '#444' }}>FFmpeg command:</div>
+            <pre className="log-block" style={{ maxHeight: 120, marginTop: 4 }}>{diagnostics.ffmpeg_command}</pre>
+            <div style={{ marginTop: 8, fontSize: 12, fontWeight: 600, color: '#444' }}>Last recording stderr (100 lines):</div>
+            {diagnostics.stderr_tail.length === 0
+              ? <p className="empty-state">No recording log available.</p>
+              : <pre className="log-block" style={{ maxHeight: 300, marginTop: 4 }}>
+                  {diagnostics.stderr_tail.map((l, i) => <div key={i}>{l || ' '}</div>)}
+                </pre>
+            }
+            <div style={{ marginTop: 8 }}>
+              <button className="btn btn-sm btn-secondary" onClick={handleLoadDiagnostics}>↻ Refresh</button>
+            </div>
+          </div>
+        )}
+      </div>
+      )}
     </div>
   )
 }

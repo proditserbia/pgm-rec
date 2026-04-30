@@ -42,7 +42,32 @@ class FilterConfig(BaseModel):
 
 
 class CaptureConfig(BaseModel):
-    """Input device configuration (maps to -f / -s / -framerate / -i in bat)."""
+    """
+    Input device configuration — Phase 11: fully configurable per channel.
+
+    Maps to the FFmpeg input flags (-f / -video_size / -framerate / -i etc.).
+
+    dshow (Windows Decklink):
+        -f dshow -video_size <resolution> -framerate <fps>
+        [-pixel_format <fmt>] [-vcodec <codec>]
+        -i video=<video_device>:audio=<audio_device>
+
+    v4l2 / generic (Linux):
+        -f <device_type> -s <resolution> -framerate <fps>
+        [-pixel_format <fmt>] [-vcodec <codec>]
+        -i <video_device>
+
+    Fields:
+        device_type   : FFmpeg demuxer name (``dshow``, ``v4l2``, ``avfoundation``…)
+        video_device  : Video capture device name / path
+        audio_device  : Audio capture device name (dshow only; ignored for v4l2)
+        resolution    : Frame size in ``WxH`` format, e.g. ``1920x1080``
+        framerate     : Capture frame rate in fps
+        pixel_format  : Optional pixel format override, e.g. ``uyvy422``, ``nv12``
+                        (passed as -pixel_format to the demuxer, before -i)
+        vcodec        : Optional forced input video codec, e.g. ``rawvideo``
+                        (passed as -vcodec to the demuxer, before -i; rarely needed)
+    """
 
     # dshow on Windows (Decklink), v4l2 on Linux
     device_type: str = "dshow"
@@ -50,6 +75,9 @@ class CaptureConfig(BaseModel):
     audio_device: str = "Decklink Audio Capture"
     resolution: str = "720x576"
     framerate: int = 25
+    # Phase 11 — optional per-channel capture format overrides
+    pixel_format: Optional[str] = None   # e.g. "uyvy422", "nv12"
+    vcodec: Optional[str] = None         # e.g. "rawvideo" (rarely needed)
 
 
 class EncodingConfig(BaseModel):
@@ -108,6 +136,17 @@ class PreviewConfig(BaseModel):
     encoder: str = "libx264"
     segment_time: int = 2
     list_size: int = 5
+    # Phase 9/10 — capture input mode for preview.
+    # direct_capture: open the same hardware device as recording (default).
+    #   Works when the hardware supports concurrent access (e.g. some v4l2
+    #   drivers).  On single-input Blackmagic Decklink systems this WILL
+    #   FAIL because the recording process already owns the device.
+    # from_recording_output: read completed segment files from record_dir /
+    #   chunks_dir instead of opening the device.  The preview is ~one segment
+    #   behind live (default segment_time = 5 min) but never contends for the
+    #   device.  This is the recommended mode for single-Decklink setups.
+    # disabled: preview is explicitly disabled — start attempts return 409.
+    input_mode: str = "direct_capture"
 
 
 class ChannelConfig(BaseModel):
@@ -275,6 +314,38 @@ class ChannelDebugResponse(BaseModel):
     stall_seconds: Optional[float] = None  # seconds since last file size growth
 
 
+class ChannelDiagnosticsResponse(BaseModel):
+    """
+    Deep diagnostics for a channel — Phase 9.
+
+    Intended for admin troubleshooting of black video, device issues, etc.
+    All fields are best-effort; None indicates the value could not be determined.
+    """
+
+    channel_id: str
+    # Recording command (same as /command endpoint)
+    ffmpeg_command: str
+    ffmpeg_command_list: list[str]
+    # Capture input details from config
+    device_type: str
+    input_specifier: str
+    resolution: str
+    framerate: int
+    # Record directory
+    record_dir: str
+    # Latest segment on disk (in record_dir)
+    latest_segment_path: Optional[str] = None
+    latest_segment_size_bytes: Optional[int] = None
+    latest_segment_mtime: Optional[datetime] = None
+    # Last N lines of recording stderr
+    stderr_tail: list[str] = Field(default_factory=list)
+    # Hint for listing capture devices on Windows/dshow
+    dshow_device_hint: str = (
+        'ffmpeg -list_devices true -f dshow -i dummy  '
+        '(run on the recording machine)'
+    )
+
+
 # ─── Preview response models — Phase 2 ───────────────────────────────────────
 
 class PreviewHealth(str, Enum):
@@ -303,6 +374,12 @@ class HlsPreviewStatusResponse(BaseModel):
     started_at: Optional[datetime] = None
     playlist_url: Optional[str] = None
     health: PreviewHealth = PreviewHealth.UNKNOWN
+    # Phase 9 additions — playlist readiness and startup lifecycle
+    # startup_status: "stopped" | "starting" | "running" | "failed"
+    startup_status: str = "stopped"
+    playlist_ready: bool = False
+    stderr_tail: list[str] = Field(default_factory=list)
+    failed_reason: Optional[str] = None
 
 
 # ─── Manifest / Export Index models — Phase 2A ───────────────────────────────
@@ -460,3 +537,22 @@ class DiskUsageResponse(BaseModel):
     used_bytes: int
     free_bytes: int
     percent_used: float
+
+
+# ─── System config — Phase 8 ─────────────────────────────────────────────────
+
+class SystemConfigResponse(BaseModel):
+    """Sanitized effective configuration — GET /api/v1/system/config (admin only)."""
+
+    env_file: Optional[str] = None          # which .env was loaded (None = not found)
+    data_dir: str
+    ffmpeg_path: str                         # override value or "(per-channel config)"
+    ffprobe_path: str
+    database_url: str                        # password masked
+    exports_dir: str
+    preview_dir: str
+    manifests_dir: str
+    cors_origins: list[str]
+    host: str
+    port: int
+    recording_root: Optional[str] = None    # None = not configured

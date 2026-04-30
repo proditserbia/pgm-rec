@@ -36,7 +36,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from ..config.settings import get_settings
+from ..config.settings import get_settings, resolve_channel_path
 from ..db.models import ProcessRecord, RestartHistoryRecord
 from ..models.schemas import ChannelConfig, HealthStatus, ProcessStatus
 from .ffmpeg_builder import build_ffmpeg_command, format_command_for_log
@@ -521,7 +521,7 @@ class ProcessManager:
         settings = get_settings()
         min_free = settings.min_free_disk_bytes
         if min_free > 0:
-            record_dir = Path(config.paths.record_dir)
+            record_dir = resolve_channel_path(config.paths.record_dir)
             check_dir = record_dir if record_dir.exists() else record_dir.parent
             try:
                 free = shutil.disk_usage(str(check_dir)).free
@@ -543,7 +543,7 @@ class ProcessManager:
         self._prune_old_logs(channel_id)
 
         # Ensure output directory exists before FFmpeg tries to write there
-        Path(config.paths.record_dir).mkdir(parents=True, exist_ok=True)
+        resolve_channel_path(config.paths.record_dir).mkdir(parents=True, exist_ok=True)
 
         # Write command header to log (text mode)
         now_iso = datetime.now(timezone.utc).isoformat()

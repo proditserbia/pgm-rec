@@ -159,9 +159,9 @@ def test_build_hls_preview_command_structure(tmp_path):
     assert cmd[0] == cfg.ffmpeg_path
     assert "-y" in cmd
 
-    # Input
+    # Input (dshow: uses -video_size, not -s)
     assert "-f" in cmd
-    assert "-s" in cmd
+    assert "-video_size" in cmd  # dshow uses -video_size
     assert "-framerate" in cmd
     assert "-i" in cmd
 
@@ -628,3 +628,331 @@ def test_api_stop_not_running_returns_ok(client, db_session):
     assert resp.status_code == 200
     data = resp.json()
     assert data["running"] is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 10 — build_hls_preview_from_file_command
+# ---------------------------------------------------------------------------
+
+def test_build_hls_preview_from_file_command_structure(tmp_path):
+    from app.services.ffmpeg_builder import build_hls_preview_from_file_command
+
+    cfg = _make_channel_config()
+    fake_file = tmp_path / "segment.mp4"
+    fake_file.write_bytes(b"fake")
+
+    cmd = build_hls_preview_from_file_command(cfg, fake_file, tmp_path)
+
+    assert cmd[0] == cfg.ffmpeg_path
+    assert "-y" in cmd
+    # File input with looping at real-time speed
+    assert "-re" in cmd
+    assert "-stream_loop" in cmd
+    assert cmd[cmd.index("-stream_loop") + 1] == "-1"
+    assert "-i" in cmd
+    assert str(fake_file) in cmd
+    # No device flags
+    assert "-f" not in cmd[:cmd.index("-i")]
+
+    # Video filter
+    vf_idx = cmd.index("-vf")
+    vf = cmd[vf_idx + 1]
+    assert "scale=480:270" in vf
+    assert "fps=10" in vf
+
+    # Audio disabled
+    assert "-an" in cmd
+
+    # Encoding
+    assert "libx264" in cmd
+    assert "ultrafast" in cmd
+    assert "400k" in cmd
+
+    # HLS muxer
+    hls_f_indices = [i for i, x in enumerate(cmd) if x == "-f" and i > cmd.index("-i")]
+    assert any(cmd[i + 1] == "hls" for i in hls_f_indices)
+    assert "-hls_time" in cmd
+    assert "-hls_list_size" in cmd
+    assert "-hls_flags" in cmd
+    assert "delete_segments" in cmd[cmd.index("-hls_flags") + 1]
+    assert "-hls_segment_filename" in cmd
+    assert str(tmp_path / "index.m3u8") == cmd[-1]
+
+
+# ---------------------------------------------------------------------------
+# Phase 10 — HlsPreviewManager.from_recording_output mode
+# ---------------------------------------------------------------------------
+
+def test_find_latest_usable_segment_empty_dirs(tmp_path):
+    from app.services.hls_preview_manager import _find_latest_usable_segment
+
+    record_dir = tmp_path / "1_record"
+    chunks_dir = tmp_path / "2_chunks"
+    record_dir.mkdir()
+    chunks_dir.mkdir()
+    assert _find_latest_usable_segment(record_dir, chunks_dir) is None
+
+
+def test_find_latest_usable_segment_skips_newest(tmp_path):
+    from app.services.hls_preview_manager import _find_latest_usable_segment
+    import time
+
+    record_dir = tmp_path / "1_record"
+    record_dir.mkdir()
+    chunks_dir = tmp_path / "2_chunks"
+    chunks_dir.mkdir()
+
+    # Write two files with distinct mtimes
+    old_seg = record_dir / "old.mp4"
+    old_seg.write_bytes(b"old")
+    time.sleep(0.05)
+    new_seg = record_dir / "new.mp4"
+    new_seg.write_bytes(b"new")
+
+    result = _find_latest_usable_segment(record_dir, chunks_dir)
+    # Should return old.mp4 (newest=new.mp4 is currently recording, skip it)
+    assert result == old_seg
+
+
+def test_find_latest_usable_segment_single_file_falls_back_to_chunks(tmp_path):
+    from app.services.hls_preview_manager import _find_latest_usable_segment
+
+    record_dir = tmp_path / "1_record"
+    record_dir.mkdir()
+    chunks_dir = tmp_path / "2_chunks"
+    chunks_dir.mkdir()
+
+    # Only one file in record_dir (currently recording) → should check chunks
+    (record_dir / "recording.mp4").write_bytes(b"recording")
+    chunks_seg = chunks_dir / "done.mp4"
+    chunks_seg.write_bytes(b"done")
+
+    result = _find_latest_usable_segment(record_dir, chunks_dir)
+    assert result == chunks_seg
+
+
+def test_find_newer_segment(tmp_path):
+    from app.services.hls_preview_manager import _find_newer_segment
+    import time
+
+    record_dir = tmp_path / "1_record"
+    record_dir.mkdir()
+    chunks_dir = tmp_path / "2_chunks"
+    chunks_dir.mkdir()
+
+    old = chunks_dir / "old.mp4"
+    old.write_bytes(b"old")
+    time.sleep(0.05)
+    newer = chunks_dir / "newer.mp4"
+    newer.write_bytes(b"newer")
+    time.sleep(0.05)
+    # newest is the currently-recording file in record_dir — should be skipped
+    (record_dir / "current.mp4").write_bytes(b"current")
+
+    result = _find_newer_segment(old, record_dir, chunks_dir)
+    assert result == newer
+
+
+def test_manager_start_from_recording_output_pending(tmp_path):
+    """If no segment exists, preview is queued as pending (start returns None)."""
+    cfg = _make_channel_config()
+    cfg.preview.input_mode = "from_recording_output"
+
+    record_dir = tmp_path / "1_record"
+    record_dir.mkdir(parents=True)
+    chunks_dir = tmp_path / "2_chunks"
+    chunks_dir.mkdir(parents=True)
+    # Use actual paths so resolve_channel_path (which passes absolute paths through)
+    # returns the tmp dirs directly.
+    cfg.paths.record_dir = str(record_dir)
+    cfg.paths.chunks_dir = str(chunks_dir)
+    cfg.paths.final_dir = str(tmp_path / "3_final")
+
+    manager = HlsPreviewManager()
+
+    with patch("app.services.hls_preview_manager.get_settings") as mock_settings:
+        settings = MagicMock()
+        settings.logs_dir = tmp_path / "logs"
+        settings.preview_dir = tmp_path / "preview"
+        settings.stop_timeout_seconds = 15
+        settings.recording_root = None
+        mock_settings.return_value = settings
+
+        result = manager.start_preview("rts1", cfg)
+
+    assert result is None
+    assert manager.is_running("rts1")  # pending counts as running
+    status = manager.preview_status("rts1")
+    assert status["startup_status"] == "starting"
+    assert status["running"] is False
+    assert status["playlist_ready"] is False
+
+
+def test_manager_start_from_recording_output_immediate(tmp_path):
+    """If a segment exists, preview starts immediately."""
+    import time
+    cfg = _make_channel_config()
+    cfg.preview.input_mode = "from_recording_output"
+
+    record_dir = tmp_path / "1_record"
+    record_dir.mkdir(parents=True)
+    chunks_dir = tmp_path / "2_chunks"
+    chunks_dir.mkdir(parents=True)
+    cfg.paths.record_dir = str(record_dir)
+    cfg.paths.chunks_dir = str(chunks_dir)
+    cfg.paths.final_dir = str(tmp_path / "3_final")
+
+    manager = HlsPreviewManager()
+    mock_proc = _mock_process()
+
+    # Two files: newest = "currently recording", second = usable
+    old_seg = record_dir / "old.mp4"
+    old_seg.write_bytes(b"old")
+    time.sleep(0.05)
+    (record_dir / "current.mp4").write_bytes(b"current")
+
+    with patch("app.services.hls_preview_manager.get_settings") as mock_settings, \
+         patch("subprocess.Popen", return_value=mock_proc):
+
+        settings = MagicMock()
+        settings.logs_dir = tmp_path / "logs"
+        settings.preview_dir = tmp_path / "preview"
+        settings.stop_timeout_seconds = 15
+        settings.recording_root = None
+        mock_settings.return_value = settings
+
+        info = manager.start_preview("rts1", cfg)
+
+    assert info is not None
+    assert info.input_mode == "from_recording_output"
+    assert info.source_file == old_seg
+    assert manager.is_running("rts1")
+
+
+def test_manager_stop_clears_pending(tmp_path):
+    """stop_preview on a pending channel returns True and clears pending state."""
+    cfg = _make_channel_config()
+    cfg.preview.input_mode = "from_recording_output"
+
+    record_dir = tmp_path / "1_record"
+    record_dir.mkdir(parents=True)
+    chunks_dir = tmp_path / "2_chunks"
+    chunks_dir.mkdir(parents=True)
+    cfg.paths.record_dir = str(record_dir)
+    cfg.paths.chunks_dir = str(chunks_dir)
+    cfg.paths.final_dir = str(tmp_path / "3_final")
+
+    manager = HlsPreviewManager()
+
+    with patch("app.services.hls_preview_manager.get_settings") as mock_settings:
+        settings = MagicMock()
+        settings.logs_dir = tmp_path / "logs"
+        settings.preview_dir = tmp_path / "preview"
+        settings.stop_timeout_seconds = 15
+        settings.recording_root = None
+        mock_settings.return_value = settings
+
+        manager.start_preview("rts1", cfg)  # goes to pending
+        result = manager.stop_preview("rts1")
+
+    assert result is True
+    assert not manager.is_running("rts1")
+
+
+def test_manager_check_all_starts_pending_when_segment_appears(tmp_path):
+    """check_all() should start the process when a segment becomes available."""
+    import time
+    cfg = _make_channel_config()
+    cfg.preview.input_mode = "from_recording_output"
+
+    record_dir = tmp_path / "1_record"
+    record_dir.mkdir(parents=True)
+    chunks_dir = tmp_path / "2_chunks"
+    chunks_dir.mkdir(parents=True)
+    cfg.paths.record_dir = str(record_dir)
+    cfg.paths.chunks_dir = str(chunks_dir)
+    cfg.paths.final_dir = str(tmp_path / "3_final")
+
+    manager = HlsPreviewManager()
+    mock_proc = _mock_process()
+
+    with patch("app.services.hls_preview_manager.get_settings") as mock_settings, \
+         patch("subprocess.Popen", return_value=mock_proc):
+
+        settings = MagicMock()
+        settings.logs_dir = tmp_path / "logs"
+        settings.preview_dir = tmp_path / "preview"
+        settings.stop_timeout_seconds = 15
+        settings.recording_root = None
+        mock_settings.return_value = settings
+
+        # Start with empty dirs → pending
+        manager.start_preview("rts1", cfg)
+        assert "rts1" in manager._pending_file_mode
+        assert "rts1" not in manager._previews
+
+        # A segment appears
+        old_seg = record_dir / "old.mp4"
+        old_seg.write_bytes(b"old")
+        time.sleep(0.05)
+        (record_dir / "current.mp4").write_bytes(b"current")
+
+        # Watchdog picks it up
+        manager.check_all()
+
+    # Pending should be cleared and process started
+    assert "rts1" not in manager._pending_file_mode
+    assert "rts1" in manager._previews
+    assert manager._previews["rts1"].input_mode == "from_recording_output"
+
+
+def test_manager_check_all_switches_to_newer_file(tmp_path):
+    """check_all() switches to a newer segment while process is running."""
+    import time
+    cfg = _make_channel_config()
+    cfg.preview.input_mode = "from_recording_output"
+
+    record_dir = tmp_path / "1_record"
+    record_dir.mkdir(parents=True)
+    chunks_dir = tmp_path / "2_chunks"
+    chunks_dir.mkdir(parents=True)
+    cfg.paths.record_dir = str(record_dir)
+    cfg.paths.chunks_dir = str(chunks_dir)
+    cfg.paths.final_dir = str(tmp_path / "3_final")
+
+    manager = HlsPreviewManager()
+    mock_proc_old = _mock_process()  # still "alive"
+    mock_proc_new = _mock_process()
+
+    # Two segments: old (usable) + currently recording
+    old_seg = record_dir / "old.mp4"
+    old_seg.write_bytes(b"old")
+    time.sleep(0.05)
+    (record_dir / "current.mp4").write_bytes(b"current")
+
+    popen_calls = [mock_proc_old, mock_proc_new]
+
+    with patch("app.services.hls_preview_manager.get_settings") as mock_settings, \
+         patch("subprocess.Popen", side_effect=popen_calls):
+
+        settings = MagicMock()
+        settings.logs_dir = tmp_path / "logs"
+        settings.preview_dir = tmp_path / "preview"
+        settings.stop_timeout_seconds = 15
+        settings.recording_root = None
+        mock_settings.return_value = settings
+
+        manager.start_preview("rts1", cfg)
+        assert manager._previews["rts1"].source_file == old_seg
+
+        # A newer segment appears in chunks_dir
+        time.sleep(0.05)
+        newer_seg = chunks_dir / "newer.mp4"
+        newer_seg.write_bytes(b"newer")
+
+        manager.check_all()
+
+    # Process should have switched to the newer segment
+    assert manager._previews["rts1"].source_file == newer_seg
+
+

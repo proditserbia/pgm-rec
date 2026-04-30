@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -50,12 +51,13 @@ from .services.process_manager import get_process_manager
 from .services.retention import run_retention
 from .services.scheduler import get_scheduler
 from .services.watchdog import run_watchdog_loop
+from .api.v1 import auth as auth_router
 from .api.v1 import channels as channels_router
 from .api.v1 import exports as exports_router
 from .api.v1 import manifests as manifests_router
 from .api.v1 import monitoring as monitoring_router
 from .api.v1 import preview as preview_router
-from .api.v1 import auth as auth_router
+from .api.v1 import system as system_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -187,6 +189,45 @@ def _warn_multiple_workers() -> None:
         pass  # never let this crash startup
 
 
+def _log_startup_config() -> None:
+    """
+    Phase 8 — emit an INFO log showing which .env was loaded and the
+    effective values for the most operationally important settings.
+
+    Secrets (jwt_secret_key, admin_password, DB passwords) are never printed.
+    """
+    from .config.settings import get_loaded_env_file
+    settings = get_settings()
+    env_file = get_loaded_env_file()
+
+    if env_file:
+        logger.info("Config: loaded .env from %s", env_file)
+    else:
+        logger.warning(
+            "Config: no .env file found (searched backend/.env and project root/.env). "
+            "Running with defaults and process environment variables only."
+        )
+
+    ffmpeg = settings.ffmpeg_path_override if settings.ffmpeg_path_override else "(per-channel config)"
+    db_url_masked = re.sub(r"://([^:@]+):([^@]+)@", r"://\1:****@", settings.database_url)
+
+    logger.info(
+        "Effective config:"
+        "\n  data_dir       = %s"
+        "\n  ffmpeg_path    = %s"
+        "\n  ffprobe_path   = %s"
+        "\n  database_url   = %s"
+        "\n  cors_origins   = %s"
+        "\n  recording_root = %s",
+        settings.data_dir,
+        ffmpeg,
+        settings.ffprobe_path,
+        db_url_masked,
+        settings.cors_origins,
+        settings.recording_root if settings.recording_root else "(not set)",
+    )
+
+
 def _reconcile_stale_exports(db) -> None:
     """
     Phase 6.2 — mark any IN_PROGRESS / RUNNING export jobs as FAILED on startup.
@@ -222,6 +263,9 @@ async def lifespan(app: FastAPI):
     # Phase 6.2 — pre-flight safety checks (log before DB/services start)
     _warn_multiple_workers()
     _warn_default_credentials()
+
+    # Phase 8 — log which .env was loaded and effective config paths
+    _log_startup_config()
 
     # Ensure required directories exist
     for directory in (
@@ -352,6 +396,7 @@ def create_app() -> FastAPI:
     app.include_router(preview_router.router, prefix="/api/v1")
     app.include_router(manifests_router.router, prefix="/api/v1")
     app.include_router(exports_router.router, prefix="/api/v1")
+    app.include_router(system_router.router, prefix="/api/v1")
 
     @app.get("/health", tags=["system"])
     def health():

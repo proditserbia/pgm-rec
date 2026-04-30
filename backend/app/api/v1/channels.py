@@ -15,6 +15,7 @@ Endpoints:
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -26,6 +27,7 @@ from ...models.schemas import (
     ActionResponse,
     ChannelConfig,
     ChannelDetailResponse,
+    ChannelDiagnosticsResponse,
     ChannelStatusResponse,
     ChannelSummary,
     CommandPreviewResponse,
@@ -35,7 +37,7 @@ from ...models.schemas import (
     ProcessStatus,
 )
 from ...services.ffmpeg_builder import build_ffmpeg_command, format_command_for_log
-from ...services.process_manager import get_process_manager
+from ...services.process_manager import get_process_manager, _tail_file
 from .deps import AdminDep, AnyRoleDep
 
 router = APIRouter(prefix="/channels", tags=["channels"])
@@ -240,3 +242,60 @@ def get_history(
         )
         for r in records
     ]
+
+
+@router.get("/{channel_id}/diagnostics", response_model=ChannelDiagnosticsResponse)
+def get_channel_diagnostics(channel_id: str, db: DbDep, _: AdminDep):
+    """
+    Deep diagnostics for a channel — Phase 9.
+
+    Returns FFmpeg command, capture config, last 100 lines of recording stderr,
+    latest segment on disk, and a device-listing hint for Decklink/dshow setups.
+
+    Intended for in-browser admin troubleshooting of black video, device errors,
+    or SDI signal issues.  Admin only.
+    """
+    from ...config.settings import resolve_channel_path
+    from ...services.ffmpeg_builder import _build_input_specifier
+
+    ch = _get_channel_or_404(channel_id, db)
+    pm = get_process_manager()
+    config = ChannelConfig.model_validate_json(ch.config_json)
+
+    cmd = build_ffmpeg_command(config)
+    cmd_str = format_command_for_log(cmd)
+
+    # Latest segment in record_dir
+    record_dir = resolve_channel_path(config.paths.record_dir)
+    latest_path: str | None = None
+    latest_size: int | None = None
+    latest_mtime: datetime | None = None
+    try:
+        mp4s = sorted(record_dir.glob("*.mp4"), key=lambda f: f.stat().st_mtime, reverse=True)
+        if mp4s:
+            f = mp4s[0]
+            st = f.stat()
+            latest_path = str(f)
+            latest_size = st.st_size
+            latest_mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)
+    except OSError:
+        pass
+
+    # Stderr tail from current or most recent log
+    log_path = pm.get_log_path(channel_id)
+    stderr_tail = _tail_file(log_path, lines=100) if log_path else []
+
+    return ChannelDiagnosticsResponse(
+        channel_id=channel_id,
+        ffmpeg_command=cmd_str,
+        ffmpeg_command_list=cmd,
+        device_type=config.capture.device_type,
+        input_specifier=_build_input_specifier(config),
+        resolution=config.capture.resolution,
+        framerate=config.capture.framerate,
+        record_dir=str(record_dir),
+        latest_segment_path=latest_path,
+        latest_segment_size_bytes=latest_size,
+        latest_segment_mtime=latest_mtime,
+        stderr_tail=stderr_tail,
+    )

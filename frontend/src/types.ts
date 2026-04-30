@@ -44,6 +44,7 @@ export interface PreviewConfig {
   encoder: string
   segment_time: number
   list_size: number
+  input_mode: 'direct_capture' | 'from_recording_output' | 'disabled'
 }
 
 export interface ChannelConfig {
@@ -158,6 +159,32 @@ export interface HlsPreviewStatusResponse {
   started_at: string | null
   playlist_url: string | null
   health: PreviewHealth
+  // Phase 9 additions
+  startup_status: 'stopped' | 'starting' | 'running' | 'failed'
+  playlist_ready: boolean
+  stderr_tail: string[]
+  failed_reason: string | null
+}
+
+export interface PreviewLogsResponse {
+  channel_id: string
+  lines: string[]
+}
+
+export interface ChannelDiagnosticsResponse {
+  channel_id: string
+  ffmpeg_command: string
+  ffmpeg_command_list: string[]
+  device_type: string
+  input_specifier: string
+  resolution: string
+  framerate: number
+  record_dir: string
+  latest_segment_path: string | null
+  latest_segment_size_bytes: number | null
+  latest_segment_mtime: string | null
+  stderr_tail: string[]
+  dshow_device_hint: string
 }
 
 // ── Auth — Phase 4 ───────────────────────────────────────────────────────────

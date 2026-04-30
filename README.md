@@ -409,6 +409,7 @@ cp .env.example .env
 | `PGMREC_CORS_ORIGINS` | Allowed browser origins (comma-separated) | localhost:5173 + localhost:8000 |
 | `PGMREC_DATA_DIR` | Root data directory | `backend/data` |
 | `PGMREC_LOGS_DIR` | Log file directory | `backend/logs` |
+| `PGMREC_RECORDING_ROOT` | Base dir for relative channel recording paths | (not set) |
 | `PGMREC_FFMPEG_PATH_OVERRIDE` | Global FFmpeg binary override | (per-channel) |
 | `PGMREC_FFPROBE_PATH` | FFprobe binary | `ffprobe` |
 | `PGMREC_DATABASE_URL` | SQLite or PostgreSQL URL | `sqlite:///backend/pgmrec.db` |
@@ -418,6 +419,89 @@ cp .env.example .env
 | `PGMREC_EVENT_RETENTION_DAYS` | Days to keep watchdog/anomaly rows | `90` |
 
 See `.env.example` for the complete annotated list.
+
+---
+
+## 5.1 Recording paths: `.env` vs channel JSON
+
+PGMRec uses **two separate configuration layers** for paths.  Understanding
+the distinction prevents confusion when moving recordings to a different disk
+or directory.
+
+### Global paths — `.env` controls these
+
+| Variable | What it controls |
+|----------|-----------------|
+| `PGMREC_DATA_DIR` | Root for app data (manifests, exports, preview, channel configs) |
+| `PGMREC_LOGS_DIR` | Root for all log files |
+| `PGMREC_EXPORTS_DIR` | Where exported video files are written |
+| `PGMREC_PREVIEW_DIR` | Where HLS preview segments are written |
+| `PGMREC_DATABASE_URL` | Database location (SQLite file or PostgreSQL URL) |
+
+These settings affect the **backend infrastructure** — they do **not**
+override per-channel recording directories.
+
+### Per-channel recording paths — channel JSON controls these
+
+Each channel has its own JSON file in `data/channels/` (e.g. `rts1.json`).
+The `paths` block defines the **three-stage recording pipeline**:
+
+```json
+"paths": {
+  "record_dir": "D:\\AutoRec\\record\\rts1\\1_record",
+  "chunks_dir": "D:\\AutoRec\\record\\rts1\\2_chunks",
+  "final_dir":  "D:\\AutoRec\\record\\rts1\\3_final"
+}
+```
+
+| Stage | Directory key | Purpose |
+|-------|--------------|---------|
+| 1 | `record_dir` | FFmpeg writes active segments here |
+| 2 | `chunks_dir` | Completed segments are moved here by the file-mover |
+| 3 | `final_dir`  | Merged daily files stored here; subject to retention cleanup |
+
+### How to change recording destination
+
+**Option A — Absolute paths in channel JSON (recommended for existing installs)**
+
+Edit the channel JSON and set absolute paths for the new location:
+
+```json
+"paths": {
+  "record_dir": "E:\\NewDisk\\rts1\\1_record",
+  "chunks_dir": "E:\\NewDisk\\rts1\\2_chunks",
+  "final_dir":  "E:\\NewDisk\\rts1\\3_final"
+}
+```
+
+Restart PGMRec for the change to take effect.
+
+**Option B — Relative paths with `PGMREC_RECORDING_ROOT` (recommended for new installs)**
+
+Set the recording root once in `.env`:
+
+```env
+PGMREC_RECORDING_ROOT=D:\AutoRec\record     # Windows
+# PGMREC_RECORDING_ROOT=/mnt/recordings     # Linux
+```
+
+Then use relative paths in every channel JSON:
+
+```json
+"paths": {
+  "record_dir": "rts1/1_record",
+  "chunks_dir": "rts1/2_chunks",
+  "final_dir":  "rts1/3_final"
+}
+```
+
+PGMRec resolves these under `PGMREC_RECORDING_ROOT` at runtime.
+To move recordings to a new disk, change only `PGMREC_RECORDING_ROOT` — no
+per-channel JSON edits needed.
+
+> **Note:** `.env` settings do **not** retroactively override absolute paths
+> that are already set in channel JSON.  If a `paths` value is absolute, it
+> is always used exactly as written regardless of `PGMREC_RECORDING_ROOT`.
 
 ---
 
@@ -524,3 +608,156 @@ git pull
 .\scripts\windows\install_service.ps1       # updates code + deps, preserves .env
 .\scripts\windows\start_service.ps1
 ```
+
+---
+
+## Troubleshooting
+
+### Black video with Blackmagic Decklink / dshow capture
+
+When recording produces video chunks but the content is black even though an
+SDI signal is present, work through the following checklist.
+
+**Step 1 — Verify exact device names**
+
+On the recording machine, open a terminal (or PowerShell) and run:
+
+```
+ffmpeg -list_devices true -f dshow -i dummy
+```
+
+Copy the exact device names (e.g. `Decklink Video Capture`) and paste them
+into the channel JSON config (`capture.video_device` / `capture.audio_device`).
+Even a single extra space will cause the device not to be found.
+
+**Step 2 — List supported capture modes**
+
+```
+ffmpeg -f dshow -list_options true -i video="Decklink Video Capture"
+```
+
+Confirm that the resolution, framerate, and pixel format in your channel
+config match a mode listed here.  SDI standard mismatches (PAL/NTSC/HD,
+interlaced/progressive, 50 Hz vs 59.94 Hz) are a common cause of black frames
+even when signal is present on the physical input.
+
+**Step 3 — Test capture manually**
+
+```
+ffmpeg -f dshow -s 720x576 -framerate 25 -i video="Decklink Video Capture":audio="Decklink Audio Capture" -t 10 test.mp4
+```
+
+Open `test.mp4` in a media player.  If this also shows black, the issue is
+with the capture device, the SDI cable, or the signal standard — not PGMRec.
+
+**Step 4 — Try alternate pixel formats**
+
+Some Decklink cards require an explicit pixel format:
+
+```
+ffmpeg -f dshow -pixel_format uyvy422 -s 720x576 -framerate 25 \
+       -i video="Decklink Video Capture" -t 10 test.mp4
+```
+
+Refer to your Decklink documentation for the supported `pixel_format` values.
+
+**Step 5 — Use the Diagnostics endpoint**
+
+PGMRec provides a live diagnostics endpoint (admin only):
+
+```
+GET /api/v1/channels/{id}/diagnostics
+```
+
+This returns the exact FFmpeg command, the last 100 lines of recording stderr,
+the latest segment path/size, and a device-listing hint.  It is also accessible
+from the Channel Detail page in the web UI (collapsible "Channel Diagnostics"
+section).
+
+---
+
+### Preview fails with "HLS fatal error: networkError / manifestLoadError"
+
+This error appears in the browser when the HLS playlist is not yet available.
+
+**Cause A — Preview startup in progress**
+
+The preview FFmpeg process takes a few seconds to produce the first `.ts`
+segment and write the initial `index.m3u8`.  PGMRec (Phase 9+) will show
+"Starting preview…" during this period and will only display the player once
+the playlist is ready.  Wait for the status to change to "Running".
+
+**Cause B — Preview FFmpeg failed to open the capture device**
+
+On systems with a **single Blackmagic Decklink input**, the recording process
+already owns the device.  The preview process cannot open the same device
+concurrently, so it exits immediately and the playlist is never created.
+This produces "Could not RenderStream" or similar errors in the preview FFmpeg
+log.
+
+**Recommended fix — `from_recording_output` mode (Phase 10)**
+
+Set `preview.input_mode = "from_recording_output"` in the channel JSON config:
+
+```json
+{
+  "preview": {
+    "input_mode": "from_recording_output"
+  }
+}
+```
+
+In this mode PGMRec **never opens the capture device** for preview.  Instead,
+it reads the latest completed segment file from `1_record/` (or `2_chunks/`)
+and loops it at real-time speed to produce a low-resolution HLS stream.
+
+Behaviour in `from_recording_output` mode:
+- If no completed segment is available yet (recording just started), the
+  preview is queued automatically.  The watchdog will start it as soon as the
+  first 5-minute segment is ready.  The UI shows "Starting preview…" until
+  then.
+- Once a preview is running, the watchdog checks every ~10 seconds for a newer
+  completed segment.  When one appears, it switches to it automatically —
+  giving a rolling, ~5-minute-delayed view of the last completed recording
+  segment.
+- Recording is completely unaffected; both processes share no state.
+
+**Alternative — disable preview entirely**
+
+If you do not need in-browser preview at all, set `input_mode = "disabled"`:
+
+```json
+{
+  "preview": {
+    "input_mode": "disabled"
+  }
+}
+```
+
+With `input_mode = "disabled"`, clicking "Start Preview" returns HTTP 409 with
+a clear explanation rather than starting a process that will immediately fail.
+
+To view the preview stderr for a failed attempt, use the "Preview FFmpeg Log
+Tail" section in the Channel Detail page (admin only) or call:
+
+```
+GET /api/v1/channels/{id}/preview/logs?lines=100
+```
+
+---
+
+### `file_mover` logs "Destination already exists"
+
+**Cause — same size**  
+The file was already moved to `2_chunks/` in a previous run, but the source
+file was not deleted (e.g. due to a crash).  PGMRec (Phase 9+) silently removes
+the stale source file instead of logging a warning.
+
+**Cause — different size**  
+A genuine name collision: two different files landed with the same name (very
+unlikely with strftime naming).  PGMRec renames the existing destination to
+`<name>_conflict_<timestamp>.mp4` and then moves the source normally.
+
+If you see repeated warnings, check:
+- Are two recording processes writing to the same `1_record/` directory?
+- Is the `segment_filename_pattern` unique per channel?

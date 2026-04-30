@@ -13,13 +13,12 @@ from __future__ import annotations
 import shutil
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from ...config.settings import get_settings
+from ...config.settings import get_settings, resolve_channel_path
 from ...db.models import Channel, SegmentAnomaly, WatchdogEvent
 from ...db.session import get_db
 from ...models.schemas import (
@@ -82,7 +81,7 @@ def _channel_health_response(ch: Channel, db: Session) -> ChannelHealthResponse:
 
 def _newest_mp4_mtime(record_dir: str) -> datetime | None:
     """Return the mtime of the newest *.mp4 in *record_dir* as a UTC datetime."""
-    d = Path(record_dir)
+    d = resolve_channel_path(record_dir)
     if not d.exists():
         return None
     try:

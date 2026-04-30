@@ -29,7 +29,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from ..config.settings import get_settings
+from ..config.settings import get_settings, resolve_channel_path
 from ..db.models import Channel, RestartHistoryRecord, SegmentAnomaly, WatchdogEvent
 from ..db.session import get_session_factory
 from ..models.schemas import ChannelConfig
@@ -152,7 +152,7 @@ def _run_retention_sync() -> None:
 
                 # Recording file retention
                 if config.retention.enabled:
-                    final_dir = Path(config.paths.final_dir)
+                    final_dir = resolve_channel_path(config.paths.final_dir)
                     max_age = config.retention.days * _SECONDS_PER_DAY
                     total_deleted += _delete_old_recordings(final_dir, max_age)
                 else:
