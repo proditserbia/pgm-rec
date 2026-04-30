@@ -55,6 +55,7 @@ def _get_protected_paths() -> set[str]:
                     protected.add(log_path)
     except Exception:
         logger.exception("[export-retention] Failed to query protected export jobs.")
+        # Return empty set so cleanup proceeds (failing open is safer than skipping all deletions)
     return protected
 
 

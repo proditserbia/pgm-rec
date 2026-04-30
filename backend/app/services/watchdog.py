@@ -60,12 +60,15 @@ def _should_fire_alert(channel_id: str, alert_key: str, trigger_after: float) ->
     """
     Return True if the alert condition has persisted for *trigger_after* seconds.
 
-    First call for a (channel_id, alert_key) pair: records the start time and
-    returns False.  Subsequent calls: returns True once ``trigger_after`` seconds
-    have elapsed, then resets the timer so the alert can fire again if the
-    condition persists.
+    State machine per (channel_id, alert_key):
+    - First call: records the start time, returns False.
+    - Subsequent calls while elapsed < trigger_after: returns False.
+    - Once elapsed >= trigger_after: returns True **and** resets the timer.
+      The next call after a True return starts a new debounce window, so the
+      alert will fire again if the condition keeps persisting.
+    - Condition resolved: call _clear_alert() to remove the timer entirely.
 
-    Use trigger_after=0 to fire on the first call.
+    Use trigger_after=0 to fire on every call (no debounce).
     """
     key = (channel_id, alert_key)
     now = time.time()
@@ -323,7 +326,9 @@ async def _check_channel(
             await asyncio.to_thread(_restart_channel_sync, channel_id, "stalled_output")
             return
 
-    # ── All checks passed — channel is healthy; clear any pending alert timers ──
+    # ── All checks passed — channel is healthy.
+    # Clear pending alert debounce timers so future alert types (freeze, silence,
+    # black) reset their windows when the channel recovers.
     _clear_all_alerts(channel_id)
 
 
