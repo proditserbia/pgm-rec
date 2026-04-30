@@ -724,6 +724,8 @@ def api_client(tmp_manifests, in_memory_engine):
     in-memory engine via StaticPool.  Avoids full app lifespan.
     """
     from app.api.v1.manifests import router as manifests_router
+    from app.api.v1.deps import get_current_user
+    from app.db.models import User
 
     test_app = FastAPI()
     test_app.include_router(manifests_router, prefix="/api/v1")
@@ -734,7 +736,11 @@ def api_client(tmp_manifests, in_memory_engine):
         with TestSessionLocal() as session:
             yield session
 
+    def _override_auth():
+        return User(id=1, username="testadmin", password_hash="x", role="admin", is_active=True)
+
     test_app.dependency_overrides[get_db] = _override_db
+    test_app.dependency_overrides[get_current_user] = _override_auth
 
     with TestSessionLocal() as db:
         config = _make_channel_config()

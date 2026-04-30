@@ -9,6 +9,7 @@ import { StatusBadge, HealthBadge } from '../components/Badge'
 import ErrorBanner from '../components/ErrorBanner'
 import ConfirmDialog from '../components/ConfirmDialog'
 import DiskWidget from '../components/DiskWidget'
+import { useAuth } from '../contexts/AuthContext'
 
 const POLL_MS = 5000
 
@@ -31,6 +32,7 @@ function CooldownTimer({ seconds }: { seconds: number }) {
 }
 
 export default function Dashboard() {
+  const { isAdmin } = useAuth()
   const [channels, setChannels] = useState<ChannelSummary[]>([])
   const [debug, setDebug] = useState<Record<string, ChannelDebugResponse>>({})
   const [disk, setDisk] = useState<DiskUsageResponse | null>(null)
@@ -190,12 +192,16 @@ export default function Dashboard() {
 
             {/* Actions */}
             <div className="btn-group">
-              <button className="btn btn-success btn-sm" disabled={!!busy[ch.id] || ch.status === 'running'}
-                onClick={() => doAction(ch.id, startChannel)}>Start</button>
-              <button className="btn btn-danger btn-sm" disabled={!!busy[ch.id] || ch.status === 'stopped'}
-                onClick={() => requestAction(ch.id, 'stop')}>Stop</button>
-              <button className="btn btn-warning btn-sm" disabled={!!busy[ch.id]}
-                onClick={() => requestAction(ch.id, 'restart')}>Restart</button>
+              {isAdmin && (
+                <>
+                  <button className="btn btn-success btn-sm" disabled={!!busy[ch.id] || ch.status === 'running'}
+                    onClick={() => doAction(ch.id, startChannel)}>Start</button>
+                  <button className="btn btn-danger btn-sm" disabled={!!busy[ch.id] || ch.status === 'stopped'}
+                    onClick={() => requestAction(ch.id, 'stop')}>Stop</button>
+                  <button className="btn btn-warning btn-sm" disabled={!!busy[ch.id]}
+                    onClick={() => requestAction(ch.id, 'restart')}>Restart</button>
+                </>
+              )}
               <Link to={`/channels/${ch.id}`} className="btn btn-primary btn-sm" style={{ textDecoration: 'none' }}>
                 Details →
               </Link>

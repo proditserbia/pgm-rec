@@ -33,6 +33,7 @@ from ...models.schemas import (
     WatchdogEventResponse,
 )
 from ...services.process_manager import get_process_manager
+from .deps import AdminDep, AnyRoleDep
 
 router = APIRouter(tags=["monitoring"])
 
@@ -98,6 +99,7 @@ def _newest_mp4_mtime(record_dir: str) -> datetime | None:
 def get_watchdog_status(
     channel_id: str,
     db: DbDep,
+    _: AnyRoleDep,
 ):
     """Watchdog health state and recent events for a channel."""
     ch = _get_channel_or_404(channel_id, db)
@@ -110,6 +112,7 @@ def get_watchdog_status(
 def get_segment_anomalies(
     channel_id: str,
     db: DbDep,
+    _: AnyRoleDep,
     limit: int = Query(default=50, ge=1, le=500),
     resolved: bool | None = Query(default=None),
 ):
@@ -138,7 +141,7 @@ def get_segment_anomalies(
 
 
 @router.get("/channels/{channel_id}/debug", response_model=ChannelDebugResponse)
-def get_channel_debug(channel_id: str, db: DbDep):
+def get_channel_debug(channel_id: str, db: DbDep, _: AdminDep):
     """
     Detailed real-time diagnostics for a channel — Phase 1.6.
 
@@ -171,7 +174,7 @@ def get_channel_debug(channel_id: str, db: DbDep):
 
 
 @router.get("/system/health", response_model=SystemHealthResponse)
-def get_system_health(db: DbDep):
+def get_system_health(db: DbDep, _: AnyRoleDep):
     """Aggregated health summary for all channels."""
     pm = get_process_manager()
     channels = db.query(Channel).order_by(Channel.id).all()
@@ -198,7 +201,7 @@ def get_system_health(db: DbDep):
 
 
 @router.get("/system/disk", response_model=DiskUsageResponse)
-def get_disk_usage() -> DiskUsageResponse:
+def get_disk_usage(_: AnyRoleDep) -> DiskUsageResponse:
     """Disk usage for the filesystem where recordings are stored."""
     settings = get_settings()
     disk_path = str(settings.data_dir)

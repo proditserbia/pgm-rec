@@ -36,6 +36,7 @@ from ...models.schemas import (
 )
 from ...services.ffmpeg_builder import build_ffmpeg_command, format_command_for_log
 from ...services.process_manager import get_process_manager
+from .deps import AdminDep, AnyRoleDep
 
 router = APIRouter(prefix="/channels", tags=["channels"])
 
@@ -89,13 +90,13 @@ def _summary(ch: Channel) -> ChannelSummary:
 # ─── Routes ───────────────────────────────────────────────────────────────────
 
 @router.get("/", response_model=list[ChannelSummary])
-def list_channels(db: DbDep):
+def list_channels(db: DbDep, _: AnyRoleDep):
     """List all configured channels with live status."""
     return [_summary(ch) for ch in db.query(Channel).order_by(Channel.id).all()]
 
 
 @router.get("/{channel_id}", response_model=ChannelDetailResponse)
-def get_channel(channel_id: str, db: DbDep):
+def get_channel(channel_id: str, db: DbDep, _: AnyRoleDep):
     """Full channel details including config and live process status."""
     ch = _get_channel_or_404(channel_id, db)
     config = ChannelConfig.model_validate_json(ch.config_json)
@@ -107,14 +108,14 @@ def get_channel(channel_id: str, db: DbDep):
 
 
 @router.get("/{channel_id}/status", response_model=ChannelStatusResponse)
-def get_status(channel_id: str, db: DbDep):
+def get_status(channel_id: str, db: DbDep, _: AnyRoleDep):
     """Live recording status (PID, uptime, log path)."""
     ch = _get_channel_or_404(channel_id, db)
     return _status_response(ch)
 
 
 @router.post("/{channel_id}/start", response_model=ActionResponse)
-def start_channel(channel_id: str, db: DbDep):
+def start_channel(channel_id: str, db: DbDep, _: AdminDep):
     """Start recording for a channel."""
     ch = _get_channel_or_404(channel_id, db)
     if not ch.enabled:
@@ -136,7 +137,7 @@ def start_channel(channel_id: str, db: DbDep):
 
 
 @router.post("/{channel_id}/stop", response_model=ActionResponse)
-def stop_channel(channel_id: str, db: DbDep):
+def stop_channel(channel_id: str, db: DbDep, _: AdminDep):
     """Stop recording for a channel."""
     ch = _get_channel_or_404(channel_id, db)
     pm = get_process_manager()
@@ -157,7 +158,7 @@ def stop_channel(channel_id: str, db: DbDep):
 
 
 @router.post("/{channel_id}/restart", response_model=ActionResponse)
-def restart_channel(channel_id: str, db: DbDep):
+def restart_channel(channel_id: str, db: DbDep, _: AdminDep):
     """Stop then restart recording for a channel."""
     ch = _get_channel_or_404(channel_id, db)
     if not ch.enabled:
@@ -180,6 +181,7 @@ def restart_channel(channel_id: str, db: DbDep):
 def get_logs(
     channel_id: str,
     db: DbDep,
+    _: AdminDep,
     lines: int = Query(default=100, ge=1, le=5000),
 ):
     """Tail the FFmpeg stderr log for a channel."""
@@ -194,7 +196,7 @@ def get_logs(
 
 
 @router.get("/{channel_id}/command", response_model=CommandPreviewResponse)
-def preview_command(channel_id: str, db: DbDep):
+def preview_command(channel_id: str, db: DbDep, _: AdminDep):
     """
     Dry-run: return the exact FFmpeg command that would be executed for this channel.
     Useful for auditing and debugging without actually starting recording.
@@ -213,6 +215,7 @@ def preview_command(channel_id: str, db: DbDep):
 def get_history(
     channel_id: str,
     db: DbDep,
+    _: AdminDep,
     limit: int = Query(default=20, ge=1, le=200),
 ):
     """Recent process start/stop records for a channel."""

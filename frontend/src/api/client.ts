@@ -4,13 +4,31 @@ import type {
   SegmentAnomalyResponse, ChannelDebugResponse, DiskUsageResponse,
   ResolveRangeRequest, ResolveRangeResponse,
   ExportJobRequest, ExportJobResponse,
+  TokenResponse, UserResponse,
 } from '../types'
 
 export const BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) || 'http://localhost:8000'
 
+// ── Token storage ──────────────────────────────────────────────────────────
+const TOKEN_KEY = 'pgmrec_token'
+
+export function getToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY)
+}
+export function setToken(token: string): void {
+  localStorage.setItem(TOKEN_KEY, token)
+}
+export function clearToken(): void {
+  localStorage.removeItem(TOKEN_KEY)
+}
+
+// ── Core request helper ────────────────────────────────────────────────────
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const token = getToken()
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (token) headers['Authorization'] = `Bearer ${token}`
   const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    headers: { ...headers, ...options?.headers },
     ...options,
   })
   if (!res.ok) {
@@ -23,6 +41,26 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   }
   return res.json() as Promise<T>
 }
+
+// ── Auth ───────────────────────────────────────────────────────────────────
+export async function login(username: string, password: string): Promise<TokenResponse> {
+  const body = new URLSearchParams({ username, password })
+  const res = await fetch(`${BASE}/api/v1/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  })
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`
+    try {
+      const json = await res.json()
+      if (json?.detail) detail = String(json.detail)
+    } catch { /* ignore */ }
+    throw new Error(detail)
+  }
+  return res.json() as Promise<TokenResponse>
+}
+export const getCurrentUser = () => request<UserResponse>('/api/v1/auth/me')
 
 // ── Channels ──────────────────────────────────────────────────────────────────
 export const getChannels = () => request<ChannelSummary[]>('/api/v1/channels/')

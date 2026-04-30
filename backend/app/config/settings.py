@@ -92,6 +92,17 @@ class Settings(BaseSettings):
     # Acceptable difference (seconds) between requested and verified actual duration
     export_duration_tolerance_seconds: float = 5.0
 
+    # Phase 4 — Authentication & RBAC
+    # HS256 secret used to sign JWTs.  Override in production via PGMREC_JWT_SECRET_KEY.
+    jwt_secret_key: str = "change-me-in-production-pgmrec-secret"
+    jwt_algorithm: str = "HS256"
+    jwt_expire_minutes: int = 480   # 8 hours
+
+    # Admin seed: created once on first startup if no users exist.
+    # Override via PGMREC_ADMIN_USERNAME / PGMREC_ADMIN_PASSWORD env vars.
+    admin_username: str = "admin"
+    admin_password: str = "pgmrec-admin"
+
 
 _settings: Settings | None = None
 

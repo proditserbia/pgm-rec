@@ -25,6 +25,7 @@ from ...models.schemas import (
     SegmentStatus,
 )
 from ...services.manifest_service import load_manifest, resolve_export_range
+from .deps import AnyRoleDep, ExportDep
 
 router = APIRouter(tags=["manifests"])
 
@@ -43,7 +44,7 @@ def _get_channel_or_404(channel_id: str, db: Session) -> Channel:
 # ─── Routes ───────────────────────────────────────────────────────────────────
 
 @router.get("/channels/{channel_id}/manifests/{date}", response_model=DailyManifest)
-def get_manifest(channel_id: str, date: str, db: DbDep):
+def get_manifest(channel_id: str, date: str, db: DbDep, _: AnyRoleDep):
     """
     Return the full daily recording manifest for a channel and date.
 
@@ -67,6 +68,7 @@ def get_manifest(channel_id: str, date: str, db: DbDep):
 def list_segments(
     channel_id: str,
     db: DbDep,
+    _: AnyRoleDep,
     date: str = Query(..., description="YYYY-MM-DD"),
 ):
     """
@@ -102,7 +104,7 @@ def list_segments(
 
 
 @router.post("/channels/{channel_id}/exports/resolve-range", response_model=ResolveRangeResponse)
-def resolve_range(channel_id: str, request: ResolveRangeRequest, db: DbDep):
+def resolve_range(channel_id: str, request: ResolveRangeRequest, db: DbDep, _: ExportDep):
     """
     Resolve an export time range to the required segment files.
 

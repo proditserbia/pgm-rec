@@ -607,6 +607,8 @@ def app_client(in_memory_engine, tmp_path):
     """Test client with overridden DB and settings."""
     from fastapi import FastAPI
     from app.api.v1 import exports as exports_router
+    from app.api.v1.deps import get_current_user
+    from app.db.models import User
 
     test_app = FastAPI()
     test_app.include_router(exports_router.router, prefix="/api/v1")
@@ -617,7 +619,11 @@ def app_client(in_memory_engine, tmp_path):
         with SessionLocal() as db:
             yield db
 
+    def override_auth():
+        return User(id=1, username="testadmin", password_hash="x", role="admin", is_active=True)
+
     test_app.dependency_overrides[get_db] = override_get_db
+    test_app.dependency_overrides[get_current_user] = override_auth
 
     with TestClient(test_app) as client:
         # Seed a channel and segments in the DB

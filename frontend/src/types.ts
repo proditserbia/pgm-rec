@@ -122,3 +122,19 @@ export interface ExportJobResponse {
   has_gaps: boolean; actual_duration_seconds: number | null
   created_at: string; started_at: string | null; completed_at: string | null
 }
+
+// ── Auth — Phase 4 ───────────────────────────────────────────────────────────
+
+export interface TokenResponse {
+  access_token: string
+  token_type: string
+  username: string
+  role: string
+}
+
+export interface UserResponse {
+  id: number
+  username: string
+  role: 'admin' | 'export' | 'preview'
+  is_active: boolean
+}

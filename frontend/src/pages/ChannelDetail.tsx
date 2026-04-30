@@ -8,6 +8,7 @@ import type { ChannelDetailResponse, WatchdogEventResponse, SegmentAnomalyRespon
 import { StatusBadge, HealthBadge } from '../components/Badge'
 import ErrorBanner from '../components/ErrorBanner'
 import ConfirmDialog from '../components/ConfirmDialog'
+import { useAuth } from '../contexts/AuthContext'
 
 const POLL_MS = 5000
 const TZ = 'Europe/Belgrade'
@@ -27,6 +28,7 @@ function fmtUptime(s: number | null) {
 
 export default function ChannelDetail() {
   const { id } = useParams<{ id: string }>()
+  const { isAdmin } = useAuth()
   const [detail, setDetail] = useState<ChannelDetailResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -56,12 +58,12 @@ export default function ChannelDetail() {
   }, [id])
 
   const fetchLogs = useCallback(async () => {
-    if (!id || logsPaused) return
+    if (!id || logsPaused || !isAdmin) return
     try {
       const r = await getChannelLogs(id, logLines)
       setLogs(r.lines)
     } catch { /* ignore */ }
-  }, [id, logLines, logsPaused])
+  }, [id, logLines, logsPaused, isAdmin])
 
   // Auto-scroll
   useEffect(() => {
@@ -72,13 +74,14 @@ export default function ChannelDetail() {
 
   useEffect(() => {
     if (!id) return
-    fetchDetail(); fetchLogs()
-    getChannelCommand(id).then(r => setCommand(r.command_str)).catch(() => {})
+    fetchDetail()
+    if (isAdmin) fetchLogs()
+    if (isAdmin) getChannelCommand(id).then(r => setCommand(r.command_str)).catch(() => {})
     getChannelWatchdog(id).then(r => setWatchdog(r.recent_events)).catch(() => {})
     getChannelAnomalies(id).then(r => setAnomalies(r)).catch(() => {})
-    const iv = setInterval(() => { fetchDetail(); fetchLogs() }, POLL_MS)
+    const iv = setInterval(() => { fetchDetail(); if (isAdmin) fetchLogs() }, POLL_MS)
     return () => clearInterval(iv)
-  }, [fetchDetail, fetchLogs, id])
+  }, [fetchDetail, fetchLogs, id, isAdmin])
 
   async function doAction(action: (id: string) => Promise<unknown>) {
     if (!id) return
@@ -129,14 +132,16 @@ export default function ChannelDetail() {
       {error && <ErrorBanner message={error} />}
       {actionError && <ErrorBanner message={actionError} />}
 
-      <div className="btn-group" style={{ marginBottom: 16 }}>
-        <button className="btn btn-success btn-sm" disabled={busy || summary.status === 'running'}
-          onClick={() => doAction(startChannel)}>Start</button>
-        <button className="btn btn-danger btn-sm" disabled={busy || summary.status === 'stopped'}
-          onClick={() => setConfirm('stop')}>Stop</button>
-        <button className="btn btn-warning btn-sm" disabled={busy}
-          onClick={() => setConfirm('restart')}>Restart</button>
-      </div>
+      {isAdmin && (
+        <div className="btn-group" style={{ marginBottom: 16 }}>
+          <button className="btn btn-success btn-sm" disabled={busy || summary.status === 'running'}
+            onClick={() => doAction(startChannel)}>Start</button>
+          <button className="btn btn-danger btn-sm" disabled={busy || summary.status === 'stopped'}
+            onClick={() => setConfirm('stop')}>Stop</button>
+          <button className="btn btn-warning btn-sm" disabled={busy}
+            onClick={() => setConfirm('restart')}>Restart</button>
+        </div>
+      )}
 
       {/* Status */}
       <div className="card">
@@ -164,7 +169,8 @@ export default function ChannelDetail() {
         <div className="card-row"><span className="card-label">Timezone</span><span className="card-value">{config.timezone}</span></div>
       </div>
 
-      {/* FFmpeg command */}
+      {/* FFmpeg command — admin only */}
+      {isAdmin && (
       <div className="card">
         <div className="collapsible-header" onClick={() => setCmdOpen(o => !o)}>
           <span>{cmdOpen ? '▾' : '▸'}</span> FFmpeg Command Preview
@@ -175,8 +181,10 @@ export default function ChannelDetail() {
           </pre>
         )}
       </div>
+      )}
 
-      {/* Logs */}
+      {/* Logs — admin only */}
+      {isAdmin && (
       <div className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
           <span className="card-title" style={{ marginBottom: 0 }}>FFmpeg Log Tail</span>
@@ -211,6 +219,7 @@ export default function ChannelDetail() {
           )
         }
       </div>
+      )}
 
       {/* Watchdog */}
       <div className="card">

@@ -34,9 +34,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config.settings import get_settings
-from .db.models import Channel
+from .db.models import Channel, User
 from .db.session import get_session_factory, init_db
 from .models.schemas import ChannelConfig
+from .services.auth_service import create_user, get_user_by_username
 from .services.export_retention import run_export_retention
 from .services.export_worker import get_export_worker
 from .services.file_mover import run_file_mover
@@ -50,6 +51,7 @@ from .api.v1 import exports as exports_router
 from .api.v1 import manifests as manifests_router
 from .api.v1 import monitoring as monitoring_router
 from .api.v1 import preview as preview_router
+from .api.v1 import auth as auth_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -98,6 +100,27 @@ def _seed_channels(db) -> None:
     db.commit()
 
 
+def _seed_admin(db) -> None:
+    """
+    Phase 4 — create the default admin account on first startup.
+
+    Only runs if no users exist in the DB yet.  Credentials come from env vars
+    PGMREC_ADMIN_USERNAME / PGMREC_ADMIN_PASSWORD (defaults are insecure —
+    always override in production).
+    """
+    from .db.models import User  # local import avoids circular at module level
+    if db.query(User).count() > 0:
+        return  # users already seeded
+
+    settings = get_settings()
+    create_user(db, settings.admin_username, settings.admin_password, "admin")
+    logger.info(
+        "Seeded default admin user '%s'. "
+        "⚠️  Change PGMREC_ADMIN_PASSWORD before going to production!",
+        settings.admin_username,
+    )
+
+
 # ─── Application lifecycle ────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -119,6 +142,10 @@ async def lifespan(app: FastAPI):
     # Seed channels from JSON config files
     with SessionLocal() as db:
         _seed_channels(db)
+
+    # Seed default admin user (Phase 4)
+    with SessionLocal() as db:
+        _seed_admin(db)
 
     # Reconcile any stale process records from a previous run
     # (adopts live orphaned PIDs; marks dead ones as stopped)
@@ -202,11 +229,12 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
-        allow_credentials=True,
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
+    app.include_router(auth_router.router, prefix="/api/v1")
     app.include_router(channels_router.router, prefix="/api/v1")
     app.include_router(monitoring_router.router, prefix="/api/v1")
     app.include_router(preview_router.router, prefix="/api/v1")

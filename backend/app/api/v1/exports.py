@@ -46,6 +46,7 @@ from ...models.schemas import (
 )
 from ...services.export_worker import get_export_worker
 from ...services.manifest_service import resolve_export_range
+from .deps import ExportDep
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +167,7 @@ def _validate_export_request(body: ExportJobRequest) -> None:
 def create_export_job(
     channel_id: str,
     body: ExportJobRequest,
+    _: ExportDep,
     db: Session = Depends(get_db),
 ):
     """
@@ -247,6 +249,7 @@ def create_export_job(
 )
 def get_export_job(
     job_id: int,
+    _: ExportDep,
     db: Session = Depends(get_db),
 ):
     """Return the current status and metadata for one export job."""
@@ -264,6 +267,7 @@ def get_export_job(
     summary="List export jobs",
 )
 def list_export_jobs(
+    _: ExportDep,
     channel_id: Optional[str] = Query(None, description="Filter by channel ID"),
     status: Optional[str] = Query(None, description="Filter by status"),
     limit: int = Query(50, ge=1, le=500),
@@ -303,6 +307,7 @@ def list_export_jobs(
 )
 def cancel_export_job(
     job_id: int,
+    _: ExportDep,
     db: Session = Depends(get_db),
 ):
     """
@@ -348,6 +353,7 @@ def cancel_export_job(
 )
 def get_export_job_logs(
     job_id: int,
+    _: ExportDep,
     db: Session = Depends(get_db),
 ):
     """
@@ -393,6 +399,7 @@ def get_export_job_logs(
 )
 def download_export_job(
     job_id: int,
+    _: ExportDep,
     db: Session = Depends(get_db),
 ):
     """
