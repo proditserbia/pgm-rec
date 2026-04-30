@@ -4,7 +4,7 @@ import type {
   SegmentAnomalyResponse, ChannelDebugResponse, DiskUsageResponse,
   ResolveRangeRequest, ResolveRangeResponse,
   ExportJobRequest, ExportJobResponse,
-  HlsPreviewStatusResponse,
+  HlsPreviewStatusResponse, PreviewLogsResponse, ChannelDiagnosticsResponse,
   TokenResponse, UserResponse,
 } from '../types'
 
@@ -109,7 +109,7 @@ export const cancelExport = (id: number) =>
 export const getExportLogsUrl = (id: number) => `${BASE}/api/v1/exports/${id}/logs`
 export const getExportDownloadUrl = (id: number) => `${BASE}/api/v1/exports/${id}/download`
 
-// ── HLS Preview — Phase 5 ──────────────────────────────────────────────────
+// ── HLS Preview — Phase 5 / Phase 9 ───────────────────────────────────────
 export const startPreview = (channelId: string) =>
   request<HlsPreviewStatusResponse>(`/api/v1/channels/${channelId}/preview/start`, { method: 'POST' })
 export const stopPreview = (channelId: string) =>
@@ -118,3 +118,7 @@ export const getPreviewStatus = (channelId: string) =>
   request<HlsPreviewStatusResponse>(`/api/v1/channels/${channelId}/preview/status`)
 export const getPreviewPlaylistUrl = (channelId: string) =>
   `${BASE}/api/v1/channels/${channelId}/preview/playlist.m3u8`
+export const getPreviewLogs = (channelId: string, lines = 100) =>
+  request<PreviewLogsResponse>(`/api/v1/channels/${channelId}/preview/logs?lines=${lines}`)
+export const getChannelDiagnostics = (channelId: string) =>
+  request<ChannelDiagnosticsResponse>(`/api/v1/channels/${channelId}/diagnostics`)

@@ -216,8 +216,11 @@ class HlsPreviewManager:
             tail = _tail_file(info.log_path, 20)
             reason = (
                 f"Preview timed out after {timeout}s — no playlist produced. "
-                "Check: (1) correct device name, (2) signal present, "
-                "(3) preview.input_mode (set to 'disabled' if recording owns device)."
+                "Check: (1) verify exact device name with "
+                "'ffmpeg -list_devices true -f dshow -i dummy', "
+                "(2) confirm signal is present and SDI standard matches config, "
+                "(3) if recording already owns the device, set "
+                "preview.input_mode='disabled' in channel config."
             )
             if tail:
                 reason += " Last stderr: " + " | ".join(tail[-3:])

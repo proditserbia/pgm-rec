@@ -129,6 +129,8 @@ def _move_completed_files(
             else:
                 # Genuine conflict: dest exists but sizes differ.
                 # Rename the destination to a safe backup name, then proceed.
+                # Path.with_stem() requires Python 3.9+ (same requirement as
+                # the rest of the project which targets 3.9+).
                 suffix = int(time.time())
                 backup = dest.with_stem(f"{dest.stem}_conflict_{suffix}")
                 try:
