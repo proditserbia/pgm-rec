@@ -401,3 +401,15 @@ class ExportJobResponse(BaseModel):
     created_at: datetime
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+
+
+# ─── System — Phase 3.5 ───────────────────────────────────────────────────────
+
+class DiskUsageResponse(BaseModel):
+    """Disk usage for the filesystem where recordings are stored."""
+
+    path: str
+    total_bytes: int
+    used_bytes: int
+    free_bytes: int
+    percent_used: float

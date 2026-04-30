@@ -6,9 +6,11 @@ Endpoints:
   GET /api/v1/channels/{id}/anomalies     segment anomaly history
   GET /api/v1/channels/{id}/debug         detailed real-time diagnostics (Phase 1.6)
   GET /api/v1/system/health               aggregated health of all channels
+  GET /api/v1/system/disk                 disk usage for the data directory (Phase 3.5)
 """
 from __future__ import annotations
 
+import shutil
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,11 +19,13 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from ...config.settings import get_settings
 from ...db.models import Channel, SegmentAnomaly, WatchdogEvent
 from ...db.session import get_db
 from ...models.schemas import (
     ChannelDebugResponse,
     ChannelHealthResponse,
+    DiskUsageResponse,
     HealthStatus,
     ProcessStatus,
     SegmentAnomalyResponse,
@@ -190,4 +194,27 @@ def get_system_health(db: DbDep):
         degraded=degraded,
         cooldown=cooldown,
         unknown=unknown,
+    )
+
+
+@router.get("/system/disk", response_model=DiskUsageResponse)
+def get_disk_usage() -> DiskUsageResponse:
+    """Disk usage for the filesystem where recordings are stored."""
+    settings = get_settings()
+    disk_path = str(settings.data_dir)
+    try:
+        usage = shutil.disk_usage(disk_path)
+    except OSError:
+        disk_path = "/"
+        usage = shutil.disk_usage(disk_path)
+    total = usage.total
+    used = usage.used
+    free = usage.free
+    percent = round(used / total * 100, 1) if total > 0 else 0.0
+    return DiskUsageResponse(
+        path=disk_path,
+        total_bytes=total,
+        used_bytes=used,
+        free_bytes=free,
+        percent_used=percent,
     )
