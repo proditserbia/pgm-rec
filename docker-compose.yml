@@ -1,0 +1,108 @@
+# ─── PGMRec — docker-compose.yml ─────────────────────────────────────────────
+#
+# Phase 6.2: PostgreSQL added as primary production database.
+#
+# Brings up:
+#   - postgres    PostgreSQL 15 database (primary production DB)
+#   - backend     PGMRec FastAPI application
+#
+# ⚠️  LAN-only application — NOT designed for public internet access.
+#     Do not open port 8000 to the internet without a firewall rule.
+#
+# Offline runtime: the container requires NO internet connectivity after build.
+# All Python dependencies, frontend assets, and application code are bundled
+# inside the image at build time.
+# (docker build itself requires internet to pull the base image and packages)
+#
+# Quick start (single machine / local access only):
+#   cp .env.example .env          # edit PGMREC_JWT_SECRET_KEY + PGMREC_ADMIN_PASSWORD
+#   docker compose up -d
+#   # Access: http://localhost:8000
+#
+# LAN access (from other machines on your network):
+#   In .env, set:
+#     PGMREC_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost:8000,http://127.0.0.1:8000,http://192.168.1.50:8000
+#   In ports below, change 127.0.0.1:8000:8000  →  0.0.0.0:8000:8000
+#   Access: http://192.168.1.50:8000  (replace with your server's LAN IP)
+#
+# The backend serves both the API (/api/v1/) and the pre-built frontend (/)
+# from port 8000.  For an optional Nginx proxy, uncomment the nginx service below.
+
+services:
+
+  # ── PostgreSQL 15 ─────────────────────────────────────────────────────────
+  # Primary database for production.  Data is stored in a named Docker volume
+  # that persists across container restarts and upgrades.
+  postgres:
+    image: postgres:15-alpine
+    container_name: pgmrec-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pgmrec
+      POSTGRES_USER: pgmrec
+      POSTGRES_PASSWORD: pgmrec
+    volumes:
+      - pgmrec-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pgmrec -d pgmrec"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pgmrec-backend:latest
+    container_name: pgmrec-backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Point the backend at the PostgreSQL container.
+      # Override in .env to use a different DB URL (e.g. external PostgreSQL).
+      PGMREC_DATABASE_URL: postgresql+psycopg://pgmrec:pgmrec@postgres:5432/pgmrec
+    ports:
+      # Bind to loopback by default — only this machine can reach port 8000.
+      # Change to "0.0.0.0:8000:8000" for LAN access.
+      - "127.0.0.1:8000:8000"
+    volumes:
+      # Persist all data outside the container
+      - pgmrec-data:/app/data
+      - pgmrec-logs:/app/logs
+      # Mount channel configs from host for easy editing without rebuilding
+      # - ./backend/data/channels:/app/data/channels:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ── Optional: Nginx reverse proxy ─────────────────────────────────────────
+  # Useful for LAN-wide access via a hostname or custom port, or to add
+  # optional HTTPS with a self-signed / local CA certificate.
+  # Requires: docs/nginx.conf.example (edit server_name to your LAN hostname/IP)
+  #
+  # nginx:
+  #   image: nginx:1.27-alpine
+  #   container_name: pgmrec-nginx
+  #   restart: unless-stopped
+  #   ports:
+  #     - "0.0.0.0:80:80"
+  #     - "0.0.0.0:443:443"
+  #   volumes:
+  #     - ./docs/nginx.conf.example:/etc/nginx/conf.d/pgmrec.conf:ro
+  #     # For HTTPS: mount your internal CA cert or self-signed cert
+  #     # - /etc/ssl/pgmrec:/etc/ssl/pgmrec:ro
+  #   depends_on:
+  #     - backend
+
+volumes:
+  pgmrec-pgdata:
+  pgmrec-data:
+  pgmrec-logs:

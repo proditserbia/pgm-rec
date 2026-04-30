@@ -1,0 +1,59 @@
+{
+  "id": "rts1",
+  "name": "RTS1",
+  "display_name": "RTS1 - PRVI PROGRAM",
+  "enabled": true,
+  "ffmpeg_path": "C:\\AutoRec\\ffmpeg\\bin\\ffmpeg.exe",
+  "capture": {
+    "device_type": "dshow",
+    "video_device": "Decklink Video Capture",
+    "audio_device": "Decklink Audio Capture",
+    "resolution": "720x576",
+    "framerate": 25
+  },
+  "encoding": {
+    "video_codec": "libx264",
+    "preset": "veryfast",
+    "video_bitrate": "1500k",
+    "audio_bitrate": "128k"
+  },
+  "filters": {
+    "deinterlace": true,
+    "scale_width": 1024,
+    "scale_height": 576,
+    "overlay": {
+      "enabled": true,
+      "fontsize": 13,
+      "fontcolor": "black",
+      "box": true,
+      "boxcolor": "white@0.4",
+      "fontfile_win": "C:\\Windows\\Fonts\\verdana.ttf",
+      "fontfile_linux": "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+      "time_format": "%d-%m-%y %H:%M:%S",
+      "x": "(w-tw)/30",
+      "y": "(h-th)/20"
+    }
+  },
+  "segmentation": {
+    "segment_time": "00:05:00",
+    "segment_atclocktime": true,
+    "reset_timestamps": true,
+    "strftime": true,
+    "filename_pattern": "%d%m%y-%H%M%S"
+  },
+  "paths": {
+    "record_dir": "D:\\AutoRec\\record\\rts1\\1_record",
+    "chunks_dir": "D:\\AutoRec\\record\\rts1\\2_chunks",
+    "final_dir": "D:\\AutoRec\\record\\rts1\\3_final"
+  },
+  "retention": {
+    "enabled": true,
+    "days": 30
+  },
+  "preview": {
+    "enabled": false,
+    "port": 23001,
+    "scale": "320:180",
+    "fps": 5
+  }
+}

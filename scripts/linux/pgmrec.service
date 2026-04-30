@@ -1,0 +1,29 @@
+[Unit]
+Description=PGMRec — Broadcast Recording & Compliance System
+After=network.target
+
+[Service]
+Type=simple
+User=pgmrec
+Group=pgmrec
+WorkingDirectory=/opt/pgmrec/backend
+Environment="PATH=/opt/pgmrec/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+EnvironmentFile=-/opt/pgmrec/.env
+# PGMRec is a LAN-only application.
+# Default: binds to 127.0.0.1 (local machine only).
+# For LAN access from other machines, change to --host 0.0.0.0
+# and set PGMREC_CORS_ORIGINS to your server's LAN IP in /opt/pgmrec/.env
+ExecStart=/opt/pgmrec/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
+ExecStop=/bin/kill -TERM $MAINPID
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

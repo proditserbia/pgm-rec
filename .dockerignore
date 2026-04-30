@@ -1,0 +1,37 @@
+# Git / Python
+.git
+.gitignore
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.egg-info
+.pytest_cache
+.mypy_cache
+
+# Virtual environments
+.venv
+venv
+env
+
+# Frontend source (only dist/ is copied)
+frontend/src
+frontend/node_modules
+frontend/public
+frontend/*.json
+frontend/*.ts
+frontend/*.html
+frontend/*.md
+frontend/.env*
+
+# Dev / CI
+.env
+*.env
+.github
+
+# Test artefacts
+backend/tests
+backend/pgmrec.db
+
+# Data volumes (mounted at runtime)
+backend/data
+backend/logs
