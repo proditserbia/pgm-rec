@@ -460,3 +460,22 @@ class DiskUsageResponse(BaseModel):
     used_bytes: int
     free_bytes: int
     percent_used: float
+
+
+# ─── System config — Phase 8 ─────────────────────────────────────────────────
+
+class SystemConfigResponse(BaseModel):
+    """Sanitized effective configuration — GET /api/v1/system/config (admin only)."""
+
+    env_file: Optional[str] = None          # which .env was loaded (None = not found)
+    data_dir: str
+    ffmpeg_path: str                         # override value or "(per-channel config)"
+    ffprobe_path: str
+    database_url: str                        # password masked
+    exports_dir: str
+    preview_dir: str
+    manifests_dir: str
+    cors_origins: list[str]
+    host: str
+    port: int
+    recording_root: Optional[str] = None    # None = not configured

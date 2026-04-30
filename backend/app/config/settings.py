@@ -1,15 +1,42 @@
+from __future__ import annotations
+
+import logging
 from pathlib import Path
+from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-_BASE_DIR = Path(__file__).parent.parent.parent.resolve()
+_BASE_DIR = Path(__file__).parent.parent.parent.resolve()  # backend/
+_PROJECT_ROOT = _BASE_DIR.parent                            # repository root
+
+_logger = logging.getLogger(__name__)
+
+
+def _find_env_file() -> Path | None:
+    """
+    Search for a .env file in priority order:
+      1. backend/.env  — same directory as the Python source (preferred)
+      2. project root/.env — useful when running from repository root or as a
+         Windows service whose CWD is not the backend directory
+
+    Returns the first file that actually exists, or None if neither is found.
+    Pydantic-settings will then fall back to environment variables only.
+    """
+    for candidate in (_BASE_DIR / ".env", _PROJECT_ROOT / ".env"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+_ENV_FILE: Path | None = _find_env_file()
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="PGMREC_",
-        env_file=".env",
+        env_file=_ENV_FILE,
         env_file_encoding="utf-8",
+        extra="ignore",
     )
 
     app_name: str = "PGMRec"
@@ -170,6 +197,16 @@ class Settings(BaseSettings):
     alert_black_enabled: bool = True
     alert_black_trigger_after_seconds: int = 10
 
+    # Phase 8 — Recording root for portable relative channel paths.
+    # When set, relative paths in channel JSON configs (paths.record_dir,
+    # paths.chunks_dir, paths.final_dir) are resolved under this directory.
+    # Absolute paths in channel JSON are always used as-is.
+    #
+    # Example: PGMREC_RECORDING_ROOT=D:\AutoRec\record
+    # Channel JSON can then use: "paths": {"record_dir": "rts1/1_record", ...}
+    # Effective path becomes: D:\AutoRec\record\rts1\1_record
+    recording_root: Optional[Path] = None
+
 
 _settings: Settings | None = None
 
@@ -179,3 +216,37 @@ def get_settings() -> Settings:
     if _settings is None:
         _settings = Settings()
     return _settings
+
+
+def get_loaded_env_file() -> Path | None:
+    """Return the absolute path of the .env file loaded at startup, or None."""
+    return _ENV_FILE
+
+
+def resolve_channel_path(path_str: str) -> Path:
+    """
+    Resolve a channel recording path string to an absolute Path.
+
+    - Absolute paths are returned as-is.
+    - Relative paths are resolved under ``PGMREC_RECORDING_ROOT`` when that
+      setting is configured, enabling portable channel JSON configs such as::
+
+          "paths": {"record_dir": "rts1/1_record", ...}
+
+    - If the path is relative and ``recording_root`` is not set, it is resolved
+      relative to the current working directory and a warning is emitted.
+    """
+    p = Path(path_str)
+    if p.is_absolute():
+        return p
+    settings = get_settings()
+    if settings.recording_root is not None:
+        return (settings.recording_root / p).resolve()
+    _logger.warning(
+        "Channel path '%s' is relative but PGMREC_RECORDING_ROOT is not set; "
+        "resolving relative to CWD (%s). "
+        "Set PGMREC_RECORDING_ROOT in .env for predictable paths.",
+        path_str,
+        Path.cwd(),
+    )
+    return p.resolve()

@@ -40,7 +40,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..config.settings import get_settings
+from ..config.settings import get_settings, resolve_channel_path
 from ..db.models import Channel, SegmentAnomaly, WatchdogEvent
 from ..db.session import get_session_factory
 from ..models.schemas import ChannelConfig
@@ -258,7 +258,7 @@ async def _check_channel(
     tolerance = float(settings.watchdog_segment_tolerance_seconds)
     max_age = segment_seconds + tolerance
 
-    record_dir = Path(config.paths.record_dir)
+    record_dir = resolve_channel_path(config.paths.record_dir)
     newest_path, newest_mtime, newest_size = _get_newest_mp4(record_dir)
 
     # ── Check 2: file output age ───────────────────────────────────────────

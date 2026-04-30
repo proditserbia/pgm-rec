@@ -24,6 +24,7 @@ import platform
 import shlex
 from pathlib import Path
 
+from ..config.settings import resolve_channel_path
 from ..models.schemas import ChannelConfig, OverlayConfig
 
 
@@ -132,7 +133,7 @@ def _output_pattern(config: ChannelConfig) -> str:
     Returns a native-platform path string; pathlib handles separator differences.
     """
     seg = config.segmentation
-    record_dir = Path(config.paths.record_dir)
+    record_dir = resolve_channel_path(config.paths.record_dir)
     return str(record_dir / f"{seg.filename_pattern}.mp4")
 
 

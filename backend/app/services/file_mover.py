@@ -27,7 +27,7 @@ import shutil
 import time
 from pathlib import Path
 
-from ..config.settings import get_settings
+from ..config.settings import get_settings, resolve_channel_path
 from ..db.models import Channel
 from ..db.session import get_session_factory
 from ..models.schemas import ChannelConfig
@@ -139,8 +139,8 @@ def _run_file_mover_sync() -> None:
         for ch in channels:
             try:
                 config = ChannelConfig.model_validate_json(ch.config_json)
-                record_dir = Path(config.paths.record_dir)
-                chunks_dir = Path(config.paths.chunks_dir)
+                record_dir = resolve_channel_path(config.paths.record_dir)
+                chunks_dir = resolve_channel_path(config.paths.chunks_dir)
                 moved_paths = _move_completed_files(record_dir, chunks_dir, min_age, stability)
                 total_moved += len(moved_paths)
                 # Phase 2A: register each moved segment in manifest + DB
