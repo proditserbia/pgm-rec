@@ -5,7 +5,9 @@
 #
 # PGMRec is a LAN-only application.
 # Default: binds to 127.0.0.1 (local machine only).
-# For LAN access from other machines, set PGMREC_HOST=0.0.0.0 in .env or pass --host 0.0.0.0
+# For LAN access from other machines:
+#   - Set PGMREC_HOST=0.0.0.0 in .env  OR  pass --host 0.0.0.0
+#   - Also set PGMREC_CORS_ORIGINS to include your server's LAN IP in .env
 #
 # Usage:
 #   bash scripts/linux/start.sh
@@ -17,10 +19,17 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 BACKEND_DIR="$REPO_DIR/backend"
 VENV_DIR="$REPO_DIR/.venv"
+
+# Load .env first so PGMREC_HOST / PGMREC_PORT can be set there
+if [[ -f "$REPO_DIR/.env" ]]; then
+    set -a; source "$REPO_DIR/.env"; set +a
+fi
+
+# Defaults: read from env (set by .env above or caller), fall back to safe LAN defaults
 HOST="${PGMREC_HOST:-127.0.0.1}"
 PORT="${PGMREC_PORT:-8000}"
 
-# Allow override via CLI args
+# Allow override via CLI args (highest priority)
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --port) PORT="$2"; shift 2 ;;
@@ -39,11 +48,6 @@ else
     exit 1
 fi
 
-# Load .env if it exists
-if [[ -f "$REPO_DIR/.env" ]]; then
-    set -a; source "$REPO_DIR/.env"; set +a
-fi
-
 cd "$BACKEND_DIR"
-echo "Starting PGMRec on http://$HOST:$PORT"
+echo "Starting PGMRec on http://$HOST:$PORT  (LAN-only — do not expose to internet)"
 exec "$UVICORN" app.main:app --host "$HOST" --port "$PORT" --workers 1

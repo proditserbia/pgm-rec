@@ -108,13 +108,33 @@ class Settings(BaseSettings):
     preview_dir: Path = _BASE_DIR / "data" / "preview"
 
     # Phase 6 — Deployment
+    # Network bind address.  Used by the startup scripts (start.sh, service files).
+    # 127.0.0.1 — local machine only (default, safe)
+    # 0.0.0.0   — listen on all interfaces (required for LAN access)
+    # Override via PGMREC_HOST env var or in .env
+    host: str = "127.0.0.1"
+    # TCP port to listen on.  Override via PGMREC_PORT env var or in .env
+    port: int = 8000
+
     # Comma-separated allowed CORS origins.
-    # PGMRec is a LAN-only application — list the exact browser origin(s) that
-    # should be able to reach the API.
-    # Single-machine: http://localhost:8000  (default)
-    # LAN access:     http://192.168.1.10:8000  (your server's LAN IP)
-    # Multiple:       http://192.168.1.10:8000,http://pgmrec.local:8000
-    cors_origins: str = "http://localhost:8000"
+    # PGMRec is a LAN-only application — list every browser origin that needs
+    # to reach the API (scheme + host + port must all match).
+    #
+    # Default covers:
+    #   - React dev server (Vite):  http://localhost:5173 / http://127.0.0.1:5173
+    #   - Embedded production UI:   http://localhost:8000 / http://127.0.0.1:8000
+    #
+    # LAN access — add your server's LAN IP, e.g.:
+    #   PGMREC_CORS_ORIGINS=http://192.168.1.50:8000
+    # or append to the defaults:
+    #   PGMREC_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost:8000,http://127.0.0.1:8000,http://192.168.1.50:8000
+    cors_origins: str = (
+        "http://localhost:5173,"
+        "http://127.0.0.1:5173,"
+        "http://localhost:8000,"
+        "http://127.0.0.1:8000"
+    )
+
     # Absolute path to ffmpeg binary.  Overrides per-channel ffmpeg_path if set.
     # If empty, per-channel config is used (default).
     ffmpeg_path_override: str = ""

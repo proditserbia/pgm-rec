@@ -1,20 +1,28 @@
 # ─── PGMRec — docker-compose.yml ─────────────────────────────────────────────
 #
 # Brings up the PGMRec backend (and optionally an Nginx reverse proxy).
-# PGMRec is a LAN-only application — it is not designed for public internet access.
+#
+# ⚠️  LAN-only application — NOT designed for public internet access.
+#     Do not open port 8000 to the internet without a firewall rule.
+#
+# Offline runtime: the container requires NO internet connectivity after build.
+# All Python dependencies, frontend assets, and application code are bundled
+# inside the image at build time.
+# (docker build itself requires internet to pull the base image and packages)
 #
 # Quick start (single machine / local access only):
-#   cp .env.example .env          # edit secrets
+#   cp .env.example .env          # edit PGMREC_JWT_SECRET_KEY + PGMREC_ADMIN_PASSWORD
 #   docker compose up -d
 #   # Access: http://localhost:8000
 #
 # LAN access (from other machines on your network):
-#   In .env, set: PGMREC_CORS_ORIGINS=http://192.168.1.10:8000
+#   In .env, set:
+#     PGMREC_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost:8000,http://127.0.0.1:8000,http://192.168.1.50:8000
 #   In ports below, change 127.0.0.1:8000:8000  →  0.0.0.0:8000:8000
-#   Access: http://192.168.1.10:8000  (replace with your server's LAN IP)
+#   Access: http://192.168.1.50:8000  (replace with your server's LAN IP)
 #
 # The backend serves both the API (/api/v1/) and the pre-built frontend (/)
-# from port 8000.  For an optional Nginx proxy uncomment the nginx service below.
+# from port 8000.  For an optional Nginx proxy, uncomment the nginx service below.
 
 services:
 

@@ -3,44 +3,63 @@
 PGMRec is a broadcast-grade SDI/HDMI capture and compliance recording system
 built on FFmpeg + FastAPI + React.
 
-> **LAN-only deployment** — PGMRec is designed for internal broadcast/server
-> networks. It is not intended to be exposed to the public internet.
-> All features work fully offline on a local network.
+---
+
+> ## ⚠️ LAN-only deployment
+>
+> PGMRec is designed exclusively for **internal broadcast/server networks**.
+> It is **not** intended to be exposed to the public internet.
+>
+> - No public SaaS or cloud hosting
+> - No external service dependencies
+> - All features work fully **offline** on a LAN after installation
+> - Runtime requires **no internet connectivity**
+>
+> **Security requirements still apply even on a LAN:**
+> - Authentication and role-based access are mandatory
+> - Set a strong `PGMREC_ADMIN_PASSWORD` before first use
+> - Set a strong `PGMREC_JWT_SECRET_KEY` before first use
+> - Keep CORS limited to your actual UI origin(s)
+> - Do not open port 8000 to the internet
+
+---
 
 ## Architecture
 
 ```
 backend/   FastAPI + SQLite backend (uvicorn)
-frontend/  React 18 + TypeScript + Vite web UI
+frontend/  React 18 + TypeScript + Vite web UI (all assets bundled locally — no CDN)
 scripts/   Deployment helpers (Linux + Windows)
 docs/      Configuration examples
 ```
 
 ---
 
-## Network model
+## Network deployment model
 
-| Scenario | How to deploy |
-|----------|--------------|
-| Single machine | Default — backend binds to `127.0.0.1:8000` |
-| LAN access (other machines) | Start backend with `--host 0.0.0.0`; set `PGMREC_CORS_ORIGINS` to your server's LAN IP |
-| Hostname instead of IP (optional) | Add Nginx/Caddy reverse proxy (`docs/nginx.conf.example`) |
-| HTTPS on LAN (optional) | Use a self-signed cert or internal CA with Nginx |
+| Mode | Host | Who can reach it |
+|------|------|-----------------|
+| **Single-machine** (default) | `127.0.0.1` | Only the local machine |
+| **LAN access** | `0.0.0.0` | All machines on the same network segment |
+| **With Nginx/Caddy** (optional) | `0.0.0.0` via proxy | LAN machines via hostname; optional HTTPS |
 
-No internet access is required at runtime.
+### CORS origins
 
----
+The default CORS configuration allows both the Vite dev server (port 5173) and
+the embedded production UI (port 8000) from localhost:
 
-## Recommended directory layout
+```
+http://localhost:5173
+http://127.0.0.1:5173
+http://localhost:8000
+http://127.0.0.1:8000
+```
 
-| Path | Purpose |
-|------|---------|
-| `data/channels/` | Channel JSON configs |
-| `data/manifests/` | Daily segment manifests |
-| `data/exports/` | Exported video files |
-| `data/preview/` | HLS preview segments |
-| `logs/` | Backend + FFmpeg logs |
-| `pgmrec.db` | SQLite database |
+For **LAN access**, add your server's LAN IP to `PGMREC_CORS_ORIGINS`:
+
+```env
+PGMREC_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost:8000,http://127.0.0.1:8000,http://192.168.1.50:8000
+```
 
 ---
 
@@ -49,46 +68,49 @@ No internet access is required at runtime.
 ### Prerequisites
 
 - Docker ≥ 24 and Docker Compose ≥ 2
+- Internet access is only needed **once** during `docker build`
+- The running container has **no internet dependency**
+
+### Single-machine mode
 
 ```bash
 # 1. Clone repository
 git clone https://github.com/proditserbia/pgm-rec.git
 cd pgm-rec
 
-# 2. Build frontend (optional — embeds UI into the backend container)
+# 2. (Optional) Build frontend so the UI is embedded in the container
 cd frontend && npm install && npm run build && cd ..
 
 # 3. Configure
 cp .env.example .env
-# Edit .env:
-#   PGMREC_JWT_SECRET_KEY=<long random string>
+# Required — edit .env:
+#   PGMREC_JWT_SECRET_KEY=<generate: python -c "import secrets; print(secrets.token_hex(32))">
 #   PGMREC_ADMIN_PASSWORD=<strong password>
-#   PGMREC_CORS_ORIGINS=http://localhost:8000
 
 # 4. Start
 docker compose up -d
 
-# 5. Open browser on this machine
+# 5. Access (this machine only)
 # http://localhost:8000
 ```
 
-### LAN access from other machines
+### LAN access mode
 
 ```bash
-# In .env:
-PGMREC_CORS_ORIGINS=http://192.168.1.10:8000   # your server's LAN IP
+# In .env — add your server's LAN IP to CORS origins:
+PGMREC_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost:8000,http://127.0.0.1:8000,http://192.168.1.50:8000
 
-# In docker-compose.yml, change the ports line to:
+# In docker-compose.yml — change ports to listen on all interfaces:
 #   - "0.0.0.0:8000:8000"
 
 docker compose up -d
-# Access from LAN: http://192.168.1.10:8000
+# Access from LAN: http://192.168.1.50:8000  (use your server's actual IP)
 ```
 
 ### Data volumes
 
-Docker Compose creates two named volumes (`pgmrec-data`, `pgmrec-logs`).
-To use host paths instead, edit `docker-compose.yml`:
+By default, data is stored in named Docker volumes (`pgmrec-data`, `pgmrec-logs`).
+To use host paths:
 
 ```yaml
 volumes:
@@ -116,7 +138,7 @@ sudo apt update
 sudo apt install -y python3.12 python3.12-venv ffmpeg rsync
 ```
 
-> **Blackmagic / DeckLink** — install the DeckLink driver from
+> **Blackmagic DeckLink** — install the driver from
 > https://www.blackmagicdesign.com/support  
 > The `decklink` FFmpeg input device must be compiled into your FFmpeg build.
 > No internet access is needed after driver installation.
@@ -128,16 +150,24 @@ sudo bash scripts/linux/install_systemd.sh
 ```
 
 The script creates `/opt/pgmrec/`, a `pgmrec` system user, a Python venv,
-installs deps, and registers the `pgmrec.service` systemd unit.
+installs dependencies, and registers the `pgmrec.service` systemd unit.
 
 ### Configure
 
 ```bash
 sudo nano /opt/pgmrec/.env
-# Required:
-#   PGMREC_JWT_SECRET_KEY=<long random string>
-#   PGMREC_ADMIN_PASSWORD=<strong password>
-#   PGMREC_CORS_ORIGINS=http://localhost:8000
+```
+
+Minimum required:
+
+```env
+PGMREC_HOST=127.0.0.1              # single-machine mode (default)
+# PGMREC_HOST=0.0.0.0             # LAN access mode
+PGMREC_PORT=8000
+PGMREC_JWT_SECRET_KEY=<strong random string>
+PGMREC_ADMIN_PASSWORD=<strong password>
+PGMREC_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost:8000,http://127.0.0.1:8000
+# LAN: add http://192.168.1.50:8000 to the list above
 ```
 
 ### Control
@@ -148,24 +178,23 @@ sudo systemctl stop pgmrec
 sudo systemctl status pgmrec
 sudo journalctl -u pgmrec -f        # live logs
 
-# Convenience wrappers (run from repo root, binds 127.0.0.1 by default):
+# Convenience wrappers (reads PGMREC_HOST/PORT from .env):
 bash scripts/linux/start.sh
 bash scripts/linux/stop.sh
 ```
 
 ### LAN access (systemd)
 
-Edit the `ExecStart` line in `/etc/systemd/system/pgmrec.service`:
-
-```ini
-ExecStart=/opt/pgmrec/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
-```
-
-Also set `PGMREC_CORS_ORIGINS=http://192.168.1.10:8000` in `/opt/pgmrec/.env`.
-
-```bash
-sudo systemctl daemon-reload && sudo systemctl restart pgmrec
-```
+1. In `/opt/pgmrec/.env`:
+   ```env
+   PGMREC_HOST=0.0.0.0
+   PGMREC_CORS_ORIGINS=...,http://192.168.1.50:8000
+   ```
+2. Edit `/etc/systemd/system/pgmrec.service` — change `--host 127.0.0.1` to `--host 0.0.0.0`
+3. Reload:
+   ```bash
+   sudo systemctl daemon-reload && sudo systemctl restart pgmrec
+   ```
 
 ### Uninstall
 
@@ -185,21 +214,21 @@ sudo bash scripts/linux/uninstall_systemd.sh
 - NSSM (Non-Sucking Service Manager):
   - **Automatic** (requires internet once during setup): the installer downloads it
   - **Offline**: place `nssm.exe` in `scripts\windows\nssm.exe` before running
-    (download from https://nssm.cc on any machine)
+    (download from https://nssm.cc on any internet-connected machine)
 
-> **DeckLink on Windows** — install the Blackmagic Design DeckLink driver.
-> Point `PGMREC_FFMPEG_PATH_OVERRIDE` to an FFmpeg build compiled with `decklink`.
+> **DeckLink on Windows** — install the Blackmagic Design DeckLink driver and
+> point `PGMREC_FFMPEG_PATH_OVERRIDE` to an FFmpeg build compiled with `decklink`.
 
 ### Install
 
 ```powershell
 # Run PowerShell as Administrator from repository root
 
-# Local machine only (default — binds 127.0.0.1)
+# Single-machine mode (default — binds 127.0.0.1)
 Set-ExecutionPolicy Bypass -Scope Process
 .\scripts\windows\install_service.ps1
 
-# LAN access (binds 0.0.0.0 — also set PGMREC_CORS_ORIGINS in .env)
+# LAN access mode (binds 0.0.0.0)
 .\scripts\windows\install_service.ps1 -Host 0.0.0.0
 ```
 
@@ -209,14 +238,16 @@ Set-ExecutionPolicy Bypass -Scope Process
 notepad C:\PGMRec\.env
 ```
 
-Minimum required settings:
+Minimum required:
 
 ```env
-PGMREC_JWT_SECRET_KEY=<long random string>
+PGMREC_HOST=127.0.0.1
+PGMREC_PORT=8000
+PGMREC_JWT_SECRET_KEY=<strong random string>
 PGMREC_ADMIN_PASSWORD=<strong password>
-PGMREC_CORS_ORIGINS=http://localhost:8000
+PGMREC_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost:8000,http://127.0.0.1:8000
 
-# FFmpeg paths (adjust to your install location)
+# FFmpeg (adjust to your install location)
 PGMREC_FFMPEG_PATH_OVERRIDE=C:\AutoRec\ffmpeg\bin\ffmpeg.exe
 PGMREC_FFPROBE_PATH=C:\AutoRec\ffmpeg\bin\ffprobe.exe
 
@@ -242,25 +273,27 @@ PGMREC_DATABASE_URL=sqlite:///C:/PGMRec/data/pgmrec.db
 
 ---
 
-## 4. Frontend Production Build
+## 4. Frontend build
+
+All frontend assets are bundled locally by Vite — no CDN, no external resources.
+The production build works completely offline.
 
 ### Option A — Embedded in FastAPI (recommended for single-server)
 
 ```bash
 cd frontend
 npm install
-# Set the API base URL to your server address:
-VITE_API_BASE_URL=http://192.168.1.10:8000 npm run build
-# Or for localhost-only:
-# VITE_API_BASE_URL=http://localhost:8000 npm run build
+# Point the API base URL at your server:
+VITE_API_BASE_URL=http://localhost:8000 npm run build
+# Or for LAN IP:
+# VITE_API_BASE_URL=http://192.168.1.50:8000 npm run build
 ```
 
-When `frontend/dist/` exists next to the repo, FastAPI serves the SPA at `/`.
-The API stays at `/api/v1/`.
+When `frontend/dist/` exists, FastAPI serves the SPA at `/` and the API stays at `/api/v1/`.
 
-### Option B — Nginx reverse proxy (optional, LAN)
+### Option B — Nginx/Caddy reverse proxy (optional, LAN)
 
-Use `docs/nginx.conf.example` for HTTP or HTTPS with a self-signed cert:
+Use `docs/nginx.conf.example`:
 
 ```bash
 sudo cp docs/nginx.conf.example /etc/nginx/conf.d/pgmrec.conf
@@ -268,18 +301,30 @@ sudo cp docs/nginx.conf.example /etc/nginx/conf.d/pgmrec.conf
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-Start the backend with `--host 0.0.0.0` so Nginx can reach it, and set:
+Start the backend with `PGMREC_HOST=0.0.0.0` (so Nginx can proxy to it), then set:
 
 ```env
 PGMREC_CORS_ORIGINS=http://pgmrec.local
 ```
 
-HTTPS on the LAN is optional — generate a self-signed cert or use a local CA
-(see the commented section in `docs/nginx.conf.example`).
+### Optional HTTPS on LAN
+
+HTTPS is not required for LAN MVP, but can be added with a self-signed or
+internal-CA certificate (see commented section in `docs/nginx.conf.example`):
+
+```bash
+# Generate a self-signed cert (valid 10 years)
+openssl req -x509 -newkey rsa:4096 -days 3650 -nodes \
+  -keyout /etc/ssl/pgmrec/pgmrec.key \
+  -out    /etc/ssl/pgmrec/pgmrec.crt \
+  -subj "/CN=pgmrec.local"
+```
+
+Or use `mkcert` / Smallstep for a browser-trusted local CA certificate.
 
 ---
 
-## 5. Configuration
+## 5. Configuration reference
 
 ```bash
 cp .env.example .env
@@ -287,10 +332,12 @@ cp .env.example .env
 
 | Variable | Description | Default |
 |----------|-------------|---------|
+| `PGMREC_HOST` | Bind address (`127.0.0.1` or `0.0.0.0`) | `127.0.0.1` |
+| `PGMREC_PORT` | Listen port | `8000` |
 | `PGMREC_JWT_SECRET_KEY` | JWT signing secret (**change before use**) | insecure default |
 | `PGMREC_ADMIN_USERNAME` | Initial admin username | `admin` |
 | `PGMREC_ADMIN_PASSWORD` | Initial admin password (**change before use**) | `pgmrec-admin` |
-| `PGMREC_CORS_ORIGINS` | Allowed browser origins (comma-separated) | `http://localhost:8000` |
+| `PGMREC_CORS_ORIGINS` | Allowed browser origins (comma-separated) | localhost:5173 + localhost:8000 |
 | `PGMREC_DATA_DIR` | Root data directory | `backend/data` |
 | `PGMREC_LOGS_DIR` | Log file directory | `backend/logs` |
 | `PGMREC_FFMPEG_PATH_OVERRIDE` | Global FFmpeg binary override | (per-channel) |
@@ -298,13 +345,22 @@ cp .env.example .env
 | `PGMREC_DATABASE_URL` | SQLite URL | `sqlite:///backend/pgmrec.db` |
 | `PGMREC_MAX_CONCURRENT_EXPORTS` | Parallel export jobs | `2` |
 | `PGMREC_EXPORT_RETENTION_DAYS` | Days to keep exports (0=off) | `30` |
-| `PGMREC_PREVIEW_DIR` | HLS preview output | `backend/data/preview` |
 
-See `.env.example` for the full list.
+See `.env.example` for the complete annotated list.
 
 ---
 
-## 6. Logs
+## 6. Roles
+
+| Role | Capabilities |
+|------|-------------|
+| `admin` | Full access — recording, exports, preview start/stop |
+| `export` | View recordings, create/view exports, view preview |
+| `preview` | Dashboard, channel status, live preview only |
+
+---
+
+## 7. Logs
 
 | Path | Contents |
 |------|----------|
@@ -316,10 +372,10 @@ See `.env.example` for the full list.
 
 ---
 
-## 7. Backup & Restore
+## 8. Backup & Restore
 
 ```bash
-# Backup DB + channel configs + manifests + .env (no large recordings)
+# Backup DB + channel configs + manifests + .env (excludes large recording files)
 python scripts/backup_data.py
 # → pgmrec-backup-YYYYMMDD_HHMMSS.zip
 
@@ -334,7 +390,26 @@ sudo systemctl start pgmrec
 
 ---
 
-## 8. Safe Update Procedure
+## 9. Development setup
+
+```bash
+# Backend (binds 127.0.0.1 by default)
+cd backend
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+
+# Frontend dev server (separate terminal)
+cd frontend && npm install && npm run dev
+# Dev server: http://localhost:5173  (proxies API to localhost:8000)
+
+# Tests
+cd backend && python -m pytest tests/ -q
+```
+
+---
+
+## 10. Safe update procedure
 
 ### Docker
 
@@ -359,32 +434,4 @@ sudo systemctl restart pgmrec
 git pull
 .\scripts\windows\install_service.ps1       # updates code + deps, preserves .env
 .\scripts\windows\start_service.ps1
-```
-
----
-
-## 9. Roles
-
-| Role | Capabilities |
-|------|-------------|
-| `admin` | Full access — recording, exports, preview start/stop |
-| `export` | View recordings, create/view exports, view preview |
-| `preview` | Dashboard, channel status, live preview only |
-
----
-
-## 10. Development Setup
-
-```bash
-# Backend (binds 127.0.0.1 by default)
-cd backend
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
-
-# Frontend (separate terminal)
-cd frontend && npm install && npm run dev    # http://localhost:3000
-
-# Tests
-cd backend && python -m pytest tests/ -q
 ```
