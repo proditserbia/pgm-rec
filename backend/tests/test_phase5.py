@@ -159,9 +159,9 @@ def test_build_hls_preview_command_structure(tmp_path):
     assert cmd[0] == cfg.ffmpeg_path
     assert "-y" in cmd
 
-    # Input
+    # Input (dshow: uses -video_size, not -s)
     assert "-f" in cmd
-    assert "-s" in cmd
+    assert "-video_size" in cmd  # dshow uses -video_size
     assert "-framerate" in cmd
     assert "-i" in cmd
 

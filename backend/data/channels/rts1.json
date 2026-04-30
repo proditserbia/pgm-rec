@@ -9,7 +9,9 @@
     "video_device": "Decklink Video Capture",
     "audio_device": "Decklink Audio Capture",
     "resolution": "720x576",
-    "framerate": 25
+    "framerate": 25,
+    "pixel_format": "uyvy422",
+    "vcodec": null
   },
   "encoding": {
     "video_codec": "libx264",

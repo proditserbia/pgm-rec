@@ -42,7 +42,32 @@ class FilterConfig(BaseModel):
 
 
 class CaptureConfig(BaseModel):
-    """Input device configuration (maps to -f / -s / -framerate / -i in bat)."""
+    """
+    Input device configuration — Phase 11: fully configurable per channel.
+
+    Maps to the FFmpeg input flags (-f / -video_size / -framerate / -i etc.).
+
+    dshow (Windows Decklink):
+        -f dshow -video_size <resolution> -framerate <fps>
+        [-pixel_format <fmt>] [-vcodec <codec>]
+        -i video=<video_device>:audio=<audio_device>
+
+    v4l2 / generic (Linux):
+        -f <device_type> -s <resolution> -framerate <fps>
+        [-pixel_format <fmt>] [-vcodec <codec>]
+        -i <video_device>
+
+    Fields:
+        device_type   : FFmpeg demuxer name (``dshow``, ``v4l2``, ``avfoundation``…)
+        video_device  : Video capture device name / path
+        audio_device  : Audio capture device name (dshow only; ignored for v4l2)
+        resolution    : Frame size in ``WxH`` format, e.g. ``1920x1080``
+        framerate     : Capture frame rate in fps
+        pixel_format  : Optional pixel format override, e.g. ``uyvy422``, ``nv12``
+                        (passed as -pixel_format to the demuxer, before -i)
+        vcodec        : Optional forced input video codec, e.g. ``rawvideo``
+                        (passed as -vcodec to the demuxer, before -i; rarely needed)
+    """
 
     # dshow on Windows (Decklink), v4l2 on Linux
     device_type: str = "dshow"
@@ -50,6 +75,9 @@ class CaptureConfig(BaseModel):
     audio_device: str = "Decklink Audio Capture"
     resolution: str = "720x576"
     framerate: int = 25
+    # Phase 11 — optional per-channel capture format overrides
+    pixel_format: Optional[str] = None   # e.g. "uyvy422", "nv12"
+    vcodec: Optional[str] = None         # e.g. "rawvideo" (rarely needed)
 
 
 class EncodingConfig(BaseModel):

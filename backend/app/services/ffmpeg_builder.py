@@ -7,7 +7,7 @@ Always use shell=False with the returned list — never join into a shell string
 Replicates record_rts1.bat behavior exactly:
 
   C:\\AutoRec\\ffmpeg\\bin\\ffmpeg.exe
-    -f dshow -s 720x576 -framerate 25
+    -f dshow -video_size 720x576 -framerate 25
     -i video=Decklink Video Capture:audio=Decklink Audio Capture
     -b:v 1500k -b:a 128k
     -vf drawtext=fontsize=13:...,scale=1024:576,yadif
@@ -17,6 +17,10 @@ Replicates record_rts1.bat behavior exactly:
     D:\\AutoRec\\record\\rts1\\1_record\\%d%m%y-%H%M%S.mp4
 
 Filter chain order (matches bat): drawtext → scale → yadif
+
+Phase 11: Capture input is now fully configurable per channel.
+  - dshow: uses -video_size (device-specific flag, not the generic -s)
+  - pixel_format / vcodec optional overrides are emitted when set
 """
 from __future__ import annotations
 
@@ -126,6 +130,59 @@ def _build_input_specifier(config: ChannelConfig) -> str:
     return cap.video_device
 
 
+def _build_capture_args(config: ChannelConfig) -> list[str]:
+    """
+    Build the complete list of capture input arguments (everything before the
+    output section), i.e.:
+
+        -f <device_type>
+        -video_size <resolution>   (dshow)  OR  -s <resolution>  (other)
+        -framerate <fps>
+        [-pixel_format <fmt>]      (only when capture.pixel_format is set)
+        [-vcodec <codec>]          (only when capture.vcodec is set)
+        -i <input_specifier>
+
+    Device-type notes:
+    - dshow (Windows Decklink): FFmpeg's dshow demuxer uses ``-video_size``
+      rather than the generic ``-s`` to set the capture resolution.  Using
+      ``-s`` would silently scale the captured frames instead of requesting
+      the correct size from the device, which produces incorrect output.
+    - All other demuxers (v4l2, avfoundation, alsa, …): use the generic
+      ``-s`` flag.
+
+    Phase 11: pixel_format and vcodec are optional override fields on
+    CaptureConfig — set them only if the hardware requires explicit
+    specification (e.g. Decklink needing ``-pixel_format uyvy422``).
+    """
+    cap = config.capture
+    args: list[str] = []
+
+    # Demuxer
+    args += ["-f", cap.device_type]
+
+    # Frame size — dshow uses -video_size; generic demuxers use -s
+    if cap.device_type == "dshow":
+        args += ["-video_size", cap.resolution]
+    else:
+        args += ["-s", cap.resolution]
+
+    # Frame rate
+    args += ["-framerate", str(cap.framerate)]
+
+    # Optional pixel format (e.g. uyvy422 for Decklink)
+    if cap.pixel_format:
+        args += ["-pixel_format", cap.pixel_format]
+
+    # Optional input codec override (rarely needed; e.g. rawvideo)
+    if cap.vcodec:
+        args += ["-vcodec", cap.vcodec]
+
+    # Input specifier
+    args += ["-i", _build_input_specifier(config)]
+
+    return args
+
+
 def _output_pattern(config: ChannelConfig) -> str:
     """
     Build the strftime output path pattern for the stream_segment muxer.
@@ -155,10 +212,7 @@ def build_ffmpeg_command(config: ChannelConfig) -> list[str]:
     cmd: list[str] = [config.ffmpeg_path]
 
     # ── Input ──────────────────────────────────────────────────────────────
-    cmd += ["-f", cap.device_type]
-    cmd += ["-s", cap.resolution]
-    cmd += ["-framerate", str(cap.framerate)]
-    cmd += ["-i", _build_input_specifier(config)]
+    cmd += _build_capture_args(config)
 
     # ── Encoding ───────────────────────────────────────────────────────────
     cmd += ["-b:v", enc.video_bitrate]
@@ -249,10 +303,7 @@ def build_hls_preview_command(config: ChannelConfig, output_dir: Path) -> list[s
     cmd += ["-y"]
 
     # ── Input ──────────────────────────────────────────────────────────────
-    cmd += ["-f", cap.device_type]
-    cmd += ["-s", cap.resolution]
-    cmd += ["-framerate", str(cap.framerate)]
-    cmd += ["-i", _build_input_specifier(config)]
+    cmd += _build_capture_args(config)
 
     # ── Video filters: scale + fps ─────────────────────────────────────────
     cmd += ["-vf", f"scale={preview.width}:{preview.height},fps={preview.hls_fps}"]
@@ -362,16 +413,12 @@ def build_preview_command(config: ChannelConfig) -> list[str]:
     - No stream_segment muxer, no file output
     - No overlay filter (saves CPU; preview does not need watermark)
     """
-    cap = config.capture
     preview = config.preview
 
     cmd: list[str] = [config.ffmpeg_path]
 
     # ── Input ──────────────────────────────────────────────────────────────
-    cmd += ["-f", cap.device_type]
-    cmd += ["-s", cap.resolution]
-    cmd += ["-framerate", str(cap.framerate)]
-    cmd += ["-i", _build_input_specifier(config)]
+    cmd += _build_capture_args(config)
 
     # ── Video filters: scale down + fps reduction ──────────────────────────
     cmd += ["-vf", f"scale={preview.scale},fps={preview.fps}"]
