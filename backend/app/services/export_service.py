@@ -1,5 +1,5 @@
 """
-Export Service — Phase 2B.
+Export Service — Phase 2B / 2C.
 
 Implements the FFmpeg-based video export engine for PGMRec.
 
@@ -18,12 +18,18 @@ Architecture
    Stream-copy fallback — if the initial run exits non-zero:
        Retry with -c:v libx264 -preset veryfast -c:a aac (re-encode).
 
-2. ``run_export_job()`` — the async coroutine that drives a single job:
+2. ``verify_export_output()`` — Phase 2C post-export verification:
+   - file exists and size > 0
+   - ffprobe to read actual duration
+   - actual duration within tolerance of requested duration
+
+3. ``run_export_job()`` — the async coroutine that drives a single job:
    - loads the job from the DB
    - resolves the export range via the Phase 2A resolver
    - builds the output path and log path
    - runs FFmpeg, capturing stderr to a log file
    - updates progress_percent (0 → 100)
+   - runs post-export verification (Phase 2C)
    - marks the job completed/failed in the DB
    - called by the export worker
 
@@ -33,6 +39,8 @@ Public API
   → list[str]  (stream-copy args)
 - build_export_command_reencode(resolve_result, output_path, ffmpeg_path, threads,
                                 concat_file) → list[str]
+- verify_export_output(output_path, expected_duration, ffprobe_path, tolerance)
+  → (ok: bool, actual_duration: float | None, error: str | None)
 - run_export_job(job_id) → None   (coroutine — updates DB when done)
 """
 from __future__ import annotations
@@ -40,7 +48,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-import textwrap
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -259,6 +267,85 @@ def _parse_progress(line: str, total_seconds: float) -> Optional[float]:
     return None
 
 
+# ─── Phase 2C: Output verification ───────────────────────────────────────────
+
+def verify_export_output(
+    output_path: Path,
+    expected_duration: float,
+    ffprobe_path: str = "ffprobe",
+    tolerance: float = 5.0,
+) -> tuple[bool, Optional[float], Optional[str]]:
+    """
+    Verify that an export output file is valid.
+
+    Checks:
+    1. File exists.
+    2. File size > 0.
+    3. ffprobe can read the duration.
+    4. Actual duration is within *tolerance* seconds of *expected_duration*.
+
+    Returns:
+        (ok, actual_duration_seconds, error_message)
+        - ok=True means all checks passed.
+        - actual_duration_seconds is None if ffprobe failed.
+        - error_message is None when ok=True.
+    """
+    # 1. File existence
+    if not output_path.exists():
+        return False, None, f"Output file does not exist: {output_path}"
+
+    # 2. File size
+    try:
+        size = output_path.stat().st_size
+    except OSError as exc:
+        return False, None, f"Cannot stat output file: {exc}"
+
+    if size == 0:
+        return False, None, f"Output file is empty: {output_path}"
+
+    # 3. ffprobe duration
+    actual: Optional[float] = None
+    try:
+        result = subprocess.run(
+            [
+                ffprobe_path,
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(output_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode == 0:
+            raw = result.stdout.strip()
+            if raw:
+                actual = float(raw)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        pass
+
+    if actual is None:
+        # ffprobe unavailable or failed — treat as a soft warning, not hard fail
+        logger.warning(
+            "[export] ffprobe unavailable or failed for %s — skipping duration check.",
+            output_path,
+        )
+        return True, None, None
+
+    # 4. Duration tolerance check
+    diff = abs(actual - expected_duration)
+    if diff > tolerance:
+        return (
+            False,
+            actual,
+            f"Duration mismatch: expected {expected_duration:.1f}s, "
+            f"got {actual:.1f}s (diff={diff:.1f}s > tolerance={tolerance:.1f}s).",
+        )
+
+    return True, actual, None
+
+
 # ─── Core job runner ─────────────────────────────────────────────────────────
 
 async def run_export_job(job_id: int) -> None:
@@ -270,6 +357,7 @@ async def run_export_job(job_id: int) -> None:
     settings = get_settings()
     SessionLocal = get_session_factory()
     concat_file: Optional[Path] = None
+    output_path: Optional[Path] = None
 
     with SessionLocal() as db:
         job = _load_job(db, job_id)
@@ -340,15 +428,15 @@ async def run_export_job(job_id: int) -> None:
                 except Exception:
                     pass
 
+        # Derive ffprobe path (same directory as ffmpeg)
+        from .manifest_service import _get_ffprobe_path
+        ffprobe_path = _get_ffprobe_path(ffmpeg_path)
+
         # ── Build concat file for multi-segment export ─────────────────────
         if len(resolve.segments) > 1:
             concat_file = output_path.parent / f"concat_{job_id}.txt"
             # Compute outpoint for the last segment
             last_seg = resolve.segments[-1]
-            # out_dt is in_dt + export_duration; offset into last seg
-            # = export_duration - (last_seg.start - in_dt) ... but easier:
-            # outpoint = (in_dt + duration) - last_seg.start
-            # We work with naive datetimes (SQLite round-trip)
             from datetime import timedelta
             last_seg_start_naive = last_seg.start_time
             if hasattr(last_seg_start_naive, "tzinfo") and last_seg_start_naive.tzinfo:
@@ -401,21 +489,35 @@ async def run_export_job(job_id: int) -> None:
                 f"See log: {log_path}"
             )
 
-        # ── Verify output ──────────────────────────────────────────────────
-        if not output_path.exists() or output_path.stat().st_size == 0:
-            raise RuntimeError(f"Output file missing or empty: {output_path}")
+        # ── Phase 2C: Verify output ────────────────────────────────────────
+        ok, actual_duration, verify_error = verify_export_output(
+            output_path,
+            resolve.export_duration_seconds,
+            ffprobe_path,
+            settings.export_duration_tolerance_seconds,
+        )
+        if not ok:
+            raise RuntimeError(f"Output verification failed: {verify_error}")
 
         # ── Mark completed ─────────────────────────────────────────────────
         with SessionLocal() as db:
             _update_job(db, job_id,
                         status=ExportJobStatus.COMPLETED,
                         progress_percent=100.0,
+                        actual_duration_seconds=actual_duration,
                         completed_at=datetime.now(timezone.utc))
 
-        logger.info("[export][%d] Completed → %s", job_id, output_path)
+        logger.info("[export][%d] Completed → %s (actual_duration=%.1fs)",
+                    job_id, output_path, actual_duration or 0.0)
 
     except asyncio.CancelledError:
-        # Job was cancelled mid-run
+        # Job was cancelled mid-run — remove partial output
+        if output_path is not None and output_path.exists():
+            try:
+                output_path.unlink(missing_ok=True)
+                logger.info("[export][%d] Removed partial output on cancel: %s", job_id, output_path)
+            except OSError:
+                pass
         with SessionLocal() as db:
             _update_job(db, job_id,
                         status=ExportJobStatus.CANCELLED,
@@ -426,6 +528,12 @@ async def run_export_job(job_id: int) -> None:
     except Exception as exc:
         errmsg = str(exc)
         logger.error("[export][%d] Failed: %s", job_id, errmsg)
+        # Remove partial output on failure too
+        if output_path is not None and output_path.exists():
+            try:
+                output_path.unlink(missing_ok=True)
+            except OSError:
+                pass
         with SessionLocal() as db:
             _update_job(db, job_id,
                         status=ExportJobStatus.FAILED,
@@ -499,3 +607,4 @@ async def _run_ffmpeg(
     await proc.wait()
     log_path.write_text("\n".join(log_lines), encoding="utf-8")
     return proc.returncode == 0
+

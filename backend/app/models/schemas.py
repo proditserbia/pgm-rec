@@ -397,6 +397,7 @@ class ExportJobResponse(BaseModel):
     log_path: Optional[str] = None
     error_message: Optional[str] = None
     has_gaps: bool
+    actual_duration_seconds: Optional[float] = None
     created_at: datetime
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None

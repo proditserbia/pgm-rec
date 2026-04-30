@@ -84,6 +84,14 @@ class Settings(BaseSettings):
     # Number of threads FFmpeg may use per export job (0 = auto)
     export_ffmpeg_threads: int = 0
 
+    # Phase 2C — Export Hardening
+    # Delete exported files and logs older than this many days (0 = disabled)
+    export_retention_days: int = 30
+    # Reject export requests whose duration exceeds this many seconds (0 = unlimited)
+    max_export_duration_seconds: int = 7200   # 2 hours
+    # Acceptable difference (seconds) between requested and verified actual duration
+    export_duration_tolerance_seconds: float = 5.0
+
 
 _settings: Settings | None = None
 

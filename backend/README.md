@@ -1,6 +1,6 @@
 # PGMRec — Backend
 
-Broadcast-grade recording control system — Phase 2B: Export Engine.
+Broadcast-grade recording control system — Phase 2C: Export Hardening & Verification.
 
 ## Requirements
 
@@ -47,6 +47,9 @@ All variables are prefixed with `PGMREC_`.
 | `PGMREC_EXPORT_LOGS_DIR` | `backend/logs/exports` | Per-job FFmpeg export logs |
 | `PGMREC_MAX_CONCURRENT_EXPORTS` | `2` | Maximum simultaneous export jobs |
 | `PGMREC_EXPORT_FFMPEG_THREADS` | `0` | FFmpeg threads per export (0 = auto) |
+| `PGMREC_EXPORT_RETENTION_DAYS` | `30` | Delete export files/logs older than N days (0 = disabled) |
+| `PGMREC_MAX_EXPORT_DURATION_SECONDS` | `7200` | Reject export requests longer than N seconds (0 = unlimited) |
+| `PGMREC_EXPORT_DURATION_TOLERANCE_SECONDS` | `5.0` | Acceptable gap between requested and verified duration |
 
 ## API endpoints
 
@@ -78,7 +81,7 @@ All variables are prefixed with `PGMREC_`.
 | `GET` | `/api/v1/channels/{id}/segments?date=YYYY-MM-DD` | Segment list from DB for a date |
 | `POST` | `/api/v1/channels/{id}/exports/resolve-range` | Resolve export range (no video yet) |
 
-### Export Engine (Phase 2B)
+### Export Engine (Phase 2B + 2C)
 
 | Method | Path | Description |
 |---|---|---|
@@ -86,12 +89,18 @@ All variables are prefixed with `PGMREC_`.
 | `GET` | `/api/v1/exports/{job_id}` | Get export job status / progress |
 | `GET` | `/api/v1/exports?channel_id=&status=&limit=` | List export jobs |
 | `POST` | `/api/v1/exports/{job_id}/cancel` | Cancel a queued or running job |
+| `GET` | `/api/v1/exports/{job_id}/logs` | Raw FFmpeg stderr log for a job (Phase 2C) |
+| `GET` | `/api/v1/exports/{job_id}/download` | Download completed export file (Phase 2C) |
 
-## Export flow (Phase 2B)
+## Export flow (Phase 2B + 2C)
 
 ```
 POST /channels/rts1/exports  {"date":"2026-04-01","in_time":"14:05:30","out_time":"14:22:10"}
   │
+  ├─ Phase 2C API validation:
+  │    • in_time must be strictly before out_time
+  │    • date must not be in the future
+  │    • duration ≤ max_export_duration_seconds (when > 0)
   ├─ validate range via resolve_export_range() (Phase 2A manifest/DB)
   ├─ create ExportJob (status=queued) in DB
   ├─ wake export_worker
@@ -111,9 +120,24 @@ POST /channels/rts1/exports  {"date":"2026-04-01","in_time":"14:05:30","out_time
        │    ├─ fallback — if stream copy fails:
        │    │     ffmpeg ... -c:v libx264 -preset veryfast -c:a aac output.mp4
        │    ├─ capture stderr → logs/exports/{channel}/{date}/export_{id}.log
-       │    └─ update progress_percent from FFmpeg time= lines
+       │    ├─ update progress_percent from FFmpeg time= lines
+       │    │
+       │    ├─ Phase 2C — output verification:
+       │    │     • file exists and size > 0
+       │    │     • ffprobe reads actual duration
+       │    │     • actual duration within tolerance of requested duration
+       │    │     • store actual_duration_seconds in ExportJob
+       │    │     • if any check fails → mark job failed
+       │    │
+       │    └─ on cancel/fail → remove partial output file
        │
        └─ mark job completed / failed / cancelled in DB
+
+Export retention (Phase 2C — runs hourly):
+  • delete *.mp4 under exports_dir older than export_retention_days
+  • delete export_*.log under export_logs_dir older than export_retention_days
+  • prune now-empty date subdirectories
+  • disabled when export_retention_days = 0
 ```
 
 ## Channel configuration
@@ -142,14 +166,15 @@ backend/
 │   │   ├── scheduler.py           Interval task scheduler
 │   │   ├── preview_manager.py     Preview stream manager (Phase 2)
 │   │   ├── manifest_service.py    Manifest write/read, register_segment (Phase 2A)
-│   │   ├── export_service.py      FFmpeg export logic (Phase 2B)
-│   │   └── export_worker.py       Async export job worker (Phase 2B)
+│   │   ├── export_service.py      FFmpeg export logic + output verification (Phase 2B/2C)
+│   │   ├── export_worker.py       Async export job worker (Phase 2B)
+│   │   └── export_retention.py    Export file/log cleanup (Phase 2C)
 │   └── api/v1/
 │       ├── channels.py            Recording control endpoints
 │       ├── monitoring.py          Health / watchdog endpoints
 │       ├── preview.py             Preview stream endpoints
 │       ├── manifests.py           Manifest + range-resolver endpoints (Phase 2A)
-│       └── exports.py             Export job CRUD endpoints (Phase 2B)
+│       └── exports.py             Export job CRUD + logs/download endpoints (Phase 2B/2C)
 ├── data/
 │   ├── channels/*.json            Channel configs (seeded on first run)
 │   ├── manifests/{ch}/{date}.json Daily recording manifests (Phase 2A)

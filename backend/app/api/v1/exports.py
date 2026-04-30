@@ -1,10 +1,12 @@
 """
-Export API — Phase 2B.
+Export API — Phase 2B / 2C.
 
 Endpoints:
 
     POST /api/v1/channels/{channel_id}/exports
         Create and enqueue a new export job.
+        Phase 2C: validates in_time < out_time, rejects future dates,
+        enforces max_export_duration_seconds.
 
     GET  /api/v1/exports/{job_id}
         Get the status / details of a single export job.
@@ -14,14 +16,23 @@ Endpoints:
 
     POST /api/v1/exports/{job_id}/cancel
         Cancel a queued or running export job.
+
+    GET  /api/v1/exports/{job_id}/logs       — Phase 2C
+        Return the raw FFmpeg stderr log for a job.
+
+    GET  /api/v1/exports/{job_id}/download   — Phase 2C
+        Download the exported video file (completed jobs only).
 """
 from __future__ import annotations
 
 import logging
+from datetime import date as _date
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy.orm import Session
 
 from ...config.settings import get_settings
@@ -56,6 +67,7 @@ def _job_to_response(job: ExportJob) -> ExportJobResponse:
         log_path=job.log_path,
         error_message=job.error_message,
         has_gaps=job.has_gaps,
+        actual_duration_seconds=job.actual_duration_seconds,
         created_at=job.created_at,
         started_at=job.started_at,
         completed_at=job.completed_at,
@@ -67,6 +79,80 @@ def _require_channel(channel_id: str, db: Session) -> Channel:
     if ch is None:
         raise HTTPException(status_code=404, detail=f"Channel '{channel_id}' not found.")
     return ch
+
+
+def _parse_hms(t: str, field: str) -> tuple[int, int, int]:
+    """Parse HH:MM:SS, raising 400 on invalid input."""
+    try:
+        parts = t.split(":")
+        if len(parts) != 3:
+            raise ValueError
+        return int(parts[0]), int(parts[1]), int(parts[2])
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid {field} format '{t}'. Expected HH:MM:SS.",
+        )
+
+
+def _validate_export_request(body: ExportJobRequest) -> None:
+    """
+    Phase 2C API safety checks applied before any DB work.
+
+    Raises HTTPException 400 on:
+    - Malformed time strings
+    - in_time >= out_time
+    - date is in the future
+    - Export duration exceeds max_export_duration_seconds (when > 0)
+    """
+    settings = get_settings()
+
+    # Parse and validate date
+    try:
+        req_date = datetime.strptime(body.date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid date format '{body.date}'. Expected YYYY-MM-DD.",
+        )
+
+    today = datetime.now(timezone.utc).date()
+    if req_date > today:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Export date {body.date} is in the future. "
+                "Only past and present dates are allowed."
+            ),
+        )
+
+    # Parse times
+    in_h, in_m, in_s = _parse_hms(body.in_time, "in_time")
+    out_h, out_m, out_s = _parse_hms(body.out_time, "out_time")
+
+    in_total = in_h * 3600 + in_m * 60 + in_s
+    out_total = out_h * 3600 + out_m * 60 + out_s
+
+    if out_total <= in_total:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"out_time ({body.out_time}) must be strictly after "
+                f"in_time ({body.in_time})."
+            ),
+        )
+
+    duration = out_total - in_total
+    max_dur = settings.max_export_duration_seconds
+    if max_dur > 0 and duration > max_dur:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Requested export duration {duration}s exceeds the "
+                f"configured maximum of {max_dur}s "
+                f"({max_dur / 3600:.1f} hours)."
+            ),
+        )
 
 
 # ─── POST /channels/{channel_id}/exports ──────────────────────────────────────
@@ -86,9 +172,17 @@ def create_export_job(
     Validate the time range, resolve required segments, and create a queued
     export job.
 
+    Phase 2C validations:
+    - in_time must be strictly before out_time
+    - date must not be in the future
+    - duration must not exceed max_export_duration_seconds (when configured)
+
     If gaps are detected in the resolved range a warning is embedded in the
     job record but the job is still created (unless ``allow_gaps=false``).
     """
+    # Phase 2C: strict input validation before any DB/resolver work
+    _validate_export_request(body)
+
     _require_channel(channel_id, db)
 
     # Validate the range and detect gaps via the Phase 2A resolver
@@ -215,7 +309,8 @@ def cancel_export_job(
     Cancel a queued or running export job.
 
     - QUEUED jobs: status set to CANCELLED immediately.
-    - RUNNING jobs: the subprocess is sent SIGTERM, status set to CANCELLED.
+    - RUNNING jobs: the subprocess is sent SIGTERM, partial output is removed
+      by the worker coroutine, status set to CANCELLED.
     - COMPLETED / FAILED / CANCELLED jobs: 409 Conflict.
     """
     job = db.query(ExportJob).filter(ExportJob.id == job_id).first()
@@ -242,3 +337,105 @@ def cancel_export_job(
 
     logger.info("[export-api] Job %d cancelled.", job_id)
     return _job_to_response(job)
+
+
+# ─── GET /exports/{job_id}/logs — Phase 2C ────────────────────────────────────
+
+@router.get(
+    "/exports/{job_id}/logs",
+    response_class=PlainTextResponse,
+    summary="Get FFmpeg log for an export job",
+)
+def get_export_job_logs(
+    job_id: int,
+    db: Session = Depends(get_db),
+):
+    """
+    Return the raw FFmpeg stderr log captured during this export job.
+
+    Available as soon as the job has started (the log file may grow while
+    the job is still running).  Returns 404 if the job or log file does
+    not exist yet.
+    """
+    job = db.query(ExportJob).filter(ExportJob.id == job_id).first()
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Export job {job_id} not found.")
+
+    if job.log_path is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No log file recorded for job {job_id} yet.",
+        )
+
+    log_path = Path(job.log_path)
+    if not log_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Log file not found on disk: {job.log_path}",
+        )
+
+    try:
+        content = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not read log file: {exc}",
+        )
+
+    return PlainTextResponse(content=content)
+
+
+# ─── GET /exports/{job_id}/download — Phase 2C ────────────────────────────────
+
+@router.get(
+    "/exports/{job_id}/download",
+    summary="Download the exported video file",
+)
+def download_export_job(
+    job_id: int,
+    db: Session = Depends(get_db),
+):
+    """
+    Stream the exported MP4 file to the client.
+
+    Only available for **completed** jobs whose output file still exists on
+    disk.  Returns:
+    - 404 if the job does not exist
+    - 409 if the job is not completed
+    - 404 if the output file has been deleted (e.g. by retention cleanup)
+    """
+    job = db.query(ExportJob).filter(ExportJob.id == job_id).first()
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Export job {job_id} not found.")
+
+    if job.status != ExportJobStatus.COMPLETED:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Job {job_id} is not completed (status='{job.status}'). "
+                "Only completed jobs can be downloaded."
+            ),
+        )
+
+    if job.output_path is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No output path recorded for job {job_id}.",
+        )
+
+    output_path = Path(job.output_path)
+    if not output_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Output file no longer exists on disk: {job.output_path}. "
+                "It may have been removed by the retention cleaner."
+            ),
+        )
+
+    return FileResponse(
+        path=str(output_path),
+        media_type="video/mp4",
+        filename=output_path.name,
+    )
+

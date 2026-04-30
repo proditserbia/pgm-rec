@@ -201,6 +201,8 @@ class ExportJob(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     # True if gaps were detected in the resolved range (warning, not a blocker)
     has_gaps: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Phase 2C: actual duration measured by ffprobe after export completes
+    actual_duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

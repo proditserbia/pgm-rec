@@ -14,6 +14,15 @@ Phase 2B: Export Engine.
   - export_worker.py: async polling worker (configurable concurrency)
   - Export API: POST /channels/{id}/exports, GET /exports/{id}, GET /exports,
                 POST /exports/{id}/cancel
+
+Phase 2C: Export Hardening & Verification.
+  - Output verification via ffprobe after every export
+  - actual_duration_seconds stored in ExportJob
+  - Partial output removed on cancel/failure
+  - GET /exports/{id}/logs — raw FFmpeg stderr log
+  - GET /exports/{id}/download — FileResponse for completed jobs
+  - API validation: in_time < out_time, no future dates, max duration
+  - export_retention.py: scheduled cleanup of old export files and logs
 """
 from __future__ import annotations
 
@@ -28,6 +37,7 @@ from .config.settings import get_settings
 from .db.models import Channel
 from .db.session import get_session_factory, init_db
 from .models.schemas import ChannelConfig
+from .services.export_retention import run_export_retention
 from .services.export_worker import get_export_worker
 from .services.file_mover import run_file_mover
 from .services.preview_manager import run_preview_watchdog_loop
@@ -146,6 +156,11 @@ async def lifespan(app: FastAPI):
         settings.retention_run_interval_seconds,
         run_retention,
     )
+    scheduler.add(
+        "export_retention",
+        settings.retention_run_interval_seconds,
+        run_export_retention,
+    )
     await scheduler.start()
 
     logger.info("PGMRec %s ready.", settings.app_version)
@@ -178,8 +193,8 @@ def create_app() -> FastAPI:
         version=settings.app_version,
         description=(
             "Broadcast-grade recording and compliance system. "
-            "Phase 2B: Export Engine — manifest-driven async video exports "
-            "with stream-copy and re-encode fallback."
+            "Phase 2C: Export Hardening — output verification, logs/download endpoints, "
+            "strong validation, and export retention cleanup."
         ),
         lifespan=lifespan,
     )
