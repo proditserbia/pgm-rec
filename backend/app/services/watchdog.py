@@ -1,5 +1,5 @@
 """
-Recording Watchdog Service — Phase 1.5 / 1.6.
+Recording Watchdog Service — Phase 1.5 / 1.6 / 7.
 
 Runs as an independent asyncio Task (not via the shared scheduler) so it is
 never delayed by file_mover or retention work.
@@ -24,6 +24,13 @@ Restart backoff — Phase 1.6
    If too many restarts happen within restart_backoff_window_seconds, the channel
    enters COOLDOWN and further auto-restarts are blocked until the cooldown
    expires.
+
+Alert system — Phase 7
+   WatchdogEvent rows now carry alert_type and severity for broadcast compliance
+   monitoring.  A module-level _alert_pending dict tracks when each alert
+   condition was first seen, enabling per-type debounce (trigger_after_seconds).
+   The existing process_dead / no_new_files / stalled_output events are mapped
+   to alert_type="loss_of_recording" with severity=2.
 """
 from __future__ import annotations
 
@@ -40,6 +47,51 @@ from ..models.schemas import ChannelConfig
 from .process_manager import get_process_manager
 
 logger = logging.getLogger(__name__)
+
+
+# ─── Phase 7: Alert debounce state ───────────────────────────────────────────
+# Tracks when each alert condition was first seen per (channel_id, alert_type).
+# Key: (channel_id, alert_type_key), Value: unix timestamp of first detection.
+# Used by _should_fire_alert / _clear_alert to implement per-type debounce.
+_alert_pending: dict[tuple[str, str], float] = {}
+
+
+def _should_fire_alert(channel_id: str, alert_key: str, trigger_after: float) -> bool:
+    """
+    Return True if the alert condition has persisted for *trigger_after* seconds.
+
+    First call for a (channel_id, alert_key) pair: records the start time and
+    returns False.  Subsequent calls: returns True once ``trigger_after`` seconds
+    have elapsed, then resets the timer so the alert can fire again if the
+    condition persists.
+
+    Use trigger_after=0 to fire on the first call.
+    """
+    key = (channel_id, alert_key)
+    now = time.time()
+    if trigger_after <= 0:
+        return True
+    if key not in _alert_pending:
+        _alert_pending[key] = now
+        return False
+    elapsed = now - _alert_pending[key]
+    if elapsed >= trigger_after:
+        # Reset so the alert can re-fire if the condition continues
+        _alert_pending[key] = now
+        return True
+    return False
+
+
+def _clear_alert(channel_id: str, alert_key: str) -> None:
+    """Clear the debounce timer for *alert_key* when the condition resolves."""
+    _alert_pending.pop((channel_id, alert_key), None)
+
+
+def _clear_all_alerts(channel_id: str) -> None:
+    """Clear all pending alert timers for a channel (e.g. on healthy check)."""
+    keys_to_remove = [k for k in _alert_pending if k[0] == channel_id]
+    for k in keys_to_remove:
+        del _alert_pending[k]
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -72,12 +124,21 @@ def _get_newest_mp4(record_dir: Path):
         return None, None, None
 
 
-def _log_event(db, channel_id: str, event_type: str, details: str) -> None:
+def _log_event(
+    db,
+    channel_id: str,
+    event_type: str,
+    details: str,
+    alert_type: str | None = None,
+    severity: int = 0,
+) -> None:
     """Persist a WatchdogEvent row."""
     event = WatchdogEvent(
         channel_id=channel_id,
         event_type=event_type,
         details=details,
+        alert_type=alert_type,
+        severity=severity,
     )
     db.add(event)
     db.commit()
@@ -120,7 +181,9 @@ def _restart_channel_sync(channel_id: str, reason: str) -> None:
         with SessionLocal() as db:
             _log_event(
                 db, channel_id, "restart_suppressed",
-                f"Auto-restart blocked by cooldown policy ({reason})"
+                f"Auto-restart blocked by cooldown policy ({reason})",
+                alert_type=None,
+                severity=1,
             )
         return
 
@@ -138,7 +201,12 @@ def _restart_channel_sync(channel_id: str, reason: str) -> None:
         config = ChannelConfig.model_validate_json(channel.config_json)
         pm.restart(channel_id, config, db)
         # Log the auto-restart event in a fresh transaction
-        _log_event(db, channel_id, "auto_restarted", f"Watchdog initiated restart: {reason}")
+        _log_event(
+            db, channel_id, "auto_restarted",
+            f"Watchdog initiated restart: {reason}",
+            alert_type=None,
+            severity=0,
+        )
 
 
 # ─── Watchdog check ───────────────────────────────────────────────────────────
@@ -168,6 +236,8 @@ async def _check_channel(
                 channel_id,
                 "process_dead",
                 "FFmpeg process exited unexpectedly; triggering auto-restart",
+                alert_type="loss_of_recording",
+                severity=2,
             )
         pm.mark_unhealthy(channel_id)
         logger.info("[watchdog][%s] Scheduling auto-restart (process_dead).", channel_id)
@@ -195,6 +265,8 @@ async def _check_channel(
             _log_event(
                 db, channel_id, "no_new_files",
                 f"No mp4 files found in {record_dir} after {uptime_seconds:.0f}s",
+                alert_type="loss_of_recording",
+                severity=2,
             )
             _log_segment_anomaly(db, channel_id, None, segment_seconds, uptime_seconds)
         pm.mark_unhealthy(channel_id)
@@ -209,6 +281,8 @@ async def _check_channel(
             _log_event(
                 db, channel_id, "no_new_files",
                 f"Newest segment is {file_age:.1f}s old (max allowed {max_age:.1f}s)",
+                alert_type="loss_of_recording",
+                severity=2,
             )
             _log_segment_anomaly(db, channel_id, last_seg_ts, segment_seconds, file_age)
         pm.mark_unhealthy(channel_id)
@@ -232,6 +306,8 @@ async def _check_channel(
                     db, channel_id, "stalled_output",
                     f"File {newest_path.name} size unchanged for {stall_secs:.1f}s "
                     f"(threshold {settings.stall_detection_seconds}s)",
+                    alert_type="loss_of_recording",
+                    severity=2,
                 )
                 _log_segment_anomaly(
                     db, channel_id,
@@ -245,6 +321,10 @@ async def _check_channel(
                 channel_id, stall_secs,
             )
             await asyncio.to_thread(_restart_channel_sync, channel_id, "stalled_output")
+            return
+
+    # ── All checks passed — channel is healthy; clear any pending alert timers ──
+    _clear_all_alerts(channel_id)
 
 
 # ─── Watchdog loop ────────────────────────────────────────────────────────────

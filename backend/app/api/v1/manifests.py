@@ -98,6 +98,9 @@ def list_segments(
             status=SegmentStatus(r.status),
             created_at=r.created_at,
             ffprobe_verified=r.ffprobe_verified,
+            never_expires=r.never_expires,
+            has_freeze=r.has_freeze,
+            has_silence=r.has_silence,
         )
         for r in rows
     ]

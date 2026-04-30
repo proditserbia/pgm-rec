@@ -222,6 +222,9 @@ class WatchdogEventResponse(BaseModel):
     event_type: str
     detected_at: datetime
     details: Optional[str] = None
+    # Phase 7 — broadcast alert classification
+    alert_type: Optional[str] = None
+    severity: int = 0
 
 
 class SegmentAnomalyResponse(BaseModel):
@@ -322,6 +325,10 @@ class SegmentEntry(BaseModel):
     status: SegmentStatus = SegmentStatus.COMPLETE
     created_at: datetime
     ffprobe_verified: bool = False
+    # Phase 7 — segment flags (schema preparation; detection not yet implemented)
+    never_expires: bool = False
+    has_freeze: Optional[bool] = None
+    has_silence: Optional[bool] = None
 
 
 class GapEntry(BaseModel):
@@ -357,6 +364,9 @@ class ResolveRangeRequest(BaseModel):
     date: str      # YYYY-MM-DD
     in_time: str   # HH:MM:SS
     out_time: str  # HH:MM:SS
+    # Phase 7 — pre/post roll wrap (seconds added before/after the requested range)
+    preroll_seconds: float = 0.0
+    postroll_seconds: float = 0.0
 
 
 class SegmentSlice(BaseModel):
@@ -386,6 +396,9 @@ class ResolveRangeResponse(BaseModel):
     export_duration_seconds: float
     has_gaps: bool
     gaps: list[GapEntry]
+    # Phase 7 — effective range after applying pre/post roll (None when no wrap)
+    effective_in_time: Optional[str] = None
+    effective_out_time: Optional[str] = None
 
 
 # ─── Export Engine models — Phase 2B ─────────────────────────────────────────
@@ -406,6 +419,11 @@ class ExportJobRequest(BaseModel):
     out_time: str # HH:MM:SS  (UTC)
     # If True, create the job even when gaps are detected in the resolved range
     allow_gaps: bool = True
+    # Phase 7 — pre/post roll wrap (non-negative seconds; default 0 = no wrap)
+    preroll_seconds: float = 0.0
+    postroll_seconds: float = 0.0
+    # Phase 7 — if True, retention cleanup will skip this job's output file
+    never_expires: bool = False
 
 
 class ExportJobResponse(BaseModel):
@@ -426,6 +444,10 @@ class ExportJobResponse(BaseModel):
     created_at: datetime
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    # Phase 7
+    preroll_seconds: float = 0.0
+    postroll_seconds: float = 0.0
+    never_expires: bool = False
 
 
 # ─── System — Phase 3.5 ───────────────────────────────────────────────────────
