@@ -24,12 +24,15 @@ Phase 11: Capture input is now fully configurable per channel.
 """
 from __future__ import annotations
 
+import logging
 import platform
 import shlex
 from pathlib import Path
 
 from ..config.settings import resolve_channel_path
 from ..models.schemas import ChannelConfig, OverlayConfig
+
+logger = logging.getLogger(__name__)
 
 
 # ─── FFmpeg filter escaping helpers ───────────────────────────────────────────
@@ -196,6 +199,126 @@ def _output_pattern(config: ChannelConfig) -> str:
 
 # ─── Public API ───────────────────────────────────────────────────────────────
 
+def _build_filter_complex_with_preview(config: ChannelConfig) -> str:
+    """
+    Build a ``-filter_complex`` string that branches the video pipeline into
+    two labelled output pads for dual-output recording+preview.
+
+    Output pads:
+    - ``[main_v]`` — full-resolution recording video (all main filters applied)
+    - ``[prev_v]`` — low-resolution preview video (scale + fps reduction only)
+
+    The raw input ``[0:v]`` is split immediately so each branch processes the
+    source independently.  The main branch applies the same filter chain as
+    the normal single-output command (drawtext → scale → yadif); the preview
+    branch only does scale + fps reduction.
+
+    Example output for rts1 with overlay + deinterlace enabled::
+
+        [0:v]split=2[raw_m][raw_p];
+        [raw_m]drawtext=...,scale=1024:576,yadif[main_v];
+        [raw_p]scale=480:270,fps=10[prev_v]
+    """
+    rpo = config.recording_preview_output  # guaranteed non-None by caller
+
+    # ── Main branch: replicate the -vf chain ──────────────────────────────
+    main_filters: list[str] = []
+    if config.filters.overlay.enabled:
+        main_filters.append(_build_drawtext_filter(config.filters.overlay))
+    main_filters.append(
+        f"scale={config.filters.scale_width}:{config.filters.scale_height}"
+    )
+    if config.filters.deinterlace:
+        main_filters.append("yadif")
+    main_chain = ",".join(main_filters)
+
+    # ── Preview branch: scale + fps ───────────────────────────────────────
+    prev_chain = f"scale={rpo.width}:{rpo.height},fps={rpo.fps}"
+
+    return (
+        f"[0:v]split=2[raw_m][raw_p];"
+        f"[raw_m]{main_chain}[main_v];"
+        f"[raw_p]{prev_chain}[prev_v]"
+    )
+
+
+def _build_recording_command_with_preview(config: ChannelConfig) -> list[str]:
+    """
+    Build a dual-output FFmpeg recording command that additionally sends a
+    low-res preview stream to a UDP endpoint — Phase 12.
+
+    Uses ``-filter_complex`` to split the pipeline:
+    - First output:  main recording (stream_segment muxer → file)
+    - Second output: UDP preview (mpegts muxer → UDP URL)
+
+    ⚠️  NVENC inside recording process safety check:
+    If ``recording_preview_output.video_codec == "h264_nvenc"`` and
+    ``fail_safe_mode=True`` a WARNING is logged, reminding the operator that
+    an NVENC failure here will crash the recording process, not just preview.
+
+    Safe for ``subprocess.Popen(cmd, shell=False)``.
+    """
+    rpo = config.recording_preview_output  # guaranteed non-None + enabled by caller
+    enc = config.encoding
+    seg = config.segmentation
+
+    if rpo.fail_safe_mode and rpo.video_codec == "h264_nvenc":
+        logger.warning(
+            "[ffmpeg-builder][%s] recording_preview_output: NVENC (h264_nvenc) is "
+            "enabled inside the recording FFmpeg process (fail_safe_mode=True). "
+            "If h264_nvenc is unavailable or misconfigured the ENTIRE recording "
+            "process will crash, not just preview.  "
+            "Set video_codec='libx264' for a CPU-safe alternative.",
+            config.id,
+        )
+
+    cmd: list[str] = [config.ffmpeg_path]
+
+    # ── Input ──────────────────────────────────────────────────────────────
+    cmd += _build_capture_args(config)
+
+    # ── Filter complex: split raw input into main_v + prev_v ───────────────
+    cmd += ["-filter_complex", _build_filter_complex_with_preview(config)]
+
+    # ── First output: main recording ───────────────────────────────────────
+    cmd += ["-map", "[main_v]", "-map", "0:a"]
+    cmd += ["-b:v", enc.video_bitrate]
+    cmd += ["-b:a", enc.audio_bitrate]
+    cmd += ["-c:v", enc.video_codec]
+    cmd += ["-preset", enc.preset]
+    cmd += ["-f", "stream_segment"]
+    cmd += ["-segment_time", seg.segment_time]
+    if seg.segment_atclocktime:
+        cmd += ["-segment_atclocktime", "1"]
+    if seg.reset_timestamps:
+        cmd += ["-reset_timestamps", "1"]
+    if seg.strftime:
+        cmd += ["-strftime", "1"]
+    cmd.append(_output_pattern(config))
+
+    # ── Second output: UDP preview ──────────────────────────────────────────
+    cmd += ["-map", "[prev_v]"]
+    if rpo.audio_enabled:
+        cmd += ["-map", "0:a"]
+        cmd += ["-c:a", rpo.audio_codec]
+        cmd += ["-b:a", rpo.audio_bitrate]
+        cmd += ["-ar", str(rpo.audio_sample_rate)]
+    else:
+        cmd += ["-an"]
+
+    cmd += ["-c:v", rpo.video_codec]
+    if rpo.preset:
+        cmd += ["-preset", rpo.preset]
+    if rpo.tune and rpo.video_codec == "h264_nvenc":
+        cmd += ["-tune", rpo.tune]
+    cmd += ["-b:v", rpo.bitrate]
+
+    cmd += ["-f", rpo.format]
+    cmd.append(rpo.url)
+
+    return cmd
+
+
 def build_ffmpeg_command(config: ChannelConfig) -> list[str]:
     """
     Build a complete FFmpeg recording command as a subprocess argument list.
@@ -204,7 +327,15 @@ def build_ffmpeg_command(config: ChannelConfig) -> list[str]:
     Never pass the result to a shell — it is not shell-escaped.
 
     Mirrors record_rts1.bat parameter-by-parameter.
+
+    Phase 12: if ``recording_preview_output.enabled`` is True, delegates to
+    :func:`_build_recording_command_with_preview` which uses ``-filter_complex``
+    and a second UDP output instead of a simple ``-vf`` chain.
     """
+    rpo = config.recording_preview_output
+    if rpo is not None and rpo.enabled:
+        return _build_recording_command_with_preview(config)
+
     cap = config.capture
     enc = config.encoding
     seg = config.segmentation
@@ -292,6 +423,11 @@ def build_hls_preview_command(config: ChannelConfig, output_dir: Path) -> list[s
         raise ValueError(
             "build_hls_preview_command called with input_mode='from_recording_output'. "
             "Use build_hls_preview_from_file_command() for file-based preview."
+        )
+    if input_mode == "from_udp":
+        raise ValueError(
+            "build_hls_preview_command called with input_mode='from_udp'. "
+            "Use build_hls_preview_from_udp_command() for UDP-based preview."
         )
 
     playlist_path = str(output_dir / "index.m3u8")
@@ -385,6 +521,83 @@ def build_hls_preview_from_file_command(
     if preview.encoder in ("libx264", "libx265"):
         cmd += ["-preset", "ultrafast"]
     cmd += ["-b:v", preview.video_bitrate]
+
+    # ── HLS muxer ─────────────────────────────────────────────────────────
+    cmd += ["-f", "hls"]
+    cmd += ["-hls_time", str(preview.segment_time)]
+    cmd += ["-hls_list_size", str(preview.list_size)]
+    cmd += ["-hls_flags", "delete_segments+append_list"]
+    cmd += ["-hls_segment_filename", segment_pattern]
+
+    # ── Output playlist ────────────────────────────────────────────────────
+    cmd.append(playlist_path)
+
+    return cmd
+
+
+def build_hls_preview_from_udp_command(
+    config: ChannelConfig,
+    output_dir: Path,
+) -> list[str]:
+    """
+    Build an FFmpeg HLS preview command that reads from a UDP stream — Phase 12.
+
+    Used for ``preview.input_mode = "from_udp"``.
+
+    The UDP stream is produced by the recording FFmpeg process via
+    ``recording_preview_output``.  Since the stream is already encoded
+    (H.264 video + optional AAC audio), this command simply remuxes
+    MPEG-TS → HLS without re-encoding (``-c:v copy``).
+
+    Key properties:
+    - Input: MPEG-TS over UDP (``recording_preview_output.url``)
+    - ``-fflags +nobuffer+genpts``: low-latency flags (do not buffer frames;
+      generate PTS from DTS if missing — guards against incomplete timestamps
+      from some UDP streams)
+    - Video: ``-c:v copy``  (stream already H.264; no re-encode needed)
+    - Audio: ``-c:a copy`` if ``recording_preview_output.audio_enabled``,
+      else ``-an``
+    - Output: HLS muxer writing to output_dir/index.m3u8
+
+    Raises:
+      ValueError  if ``recording_preview_output`` is not configured on the channel.
+
+    Safe for ``subprocess.Popen(cmd, shell=False)``.
+    Never pass the result to a shell — it is not shell-escaped.
+    """
+    rpo = config.recording_preview_output
+    if rpo is None:
+        raise ValueError(
+            f"build_hls_preview_from_udp_command: channel '{config.id}' has "
+            "no recording_preview_output configured.  Set "
+            "recording_preview_output.enabled=True and provide a UDP URL."
+        )
+
+    preview = config.preview
+    playlist_path = str(output_dir / "index.m3u8")
+    segment_pattern = str(output_dir / "seg%05d.ts")
+
+    cmd: list[str] = [config.ffmpeg_path]
+
+    # ── Suppress interactive prompts ───────────────────────────────────────
+    cmd += ["-y"]
+
+    # ── Low-latency input flags ────────────────────────────────────────────
+    # +nobuffer : read packets immediately without buffering
+    # +genpts   : generate PTS from DTS when PTS is missing (common in UDP)
+    cmd += ["-fflags", "+nobuffer+genpts"]
+
+    # ── UDP input ──────────────────────────────────────────────────────────
+    cmd += ["-i", rpo.url]
+
+    # ── Video: copy H.264 stream (already encoded by recording process) ────
+    cmd += ["-c:v", "copy"]
+
+    # ── Audio ──────────────────────────────────────────────────────────────
+    if rpo.audio_enabled:
+        cmd += ["-c:a", "copy"]
+    else:
+        cmd += ["-an"]
 
     # ── HLS muxer ─────────────────────────────────────────────────────────
     cmd += ["-f", "hls"]
