@@ -1,5 +1,5 @@
 """
-HLS Preview Process Manager — Phase 5 / Phase 9.
+HLS Preview Process Manager — Phase 5 / Phase 9 / Phase 10.
 
 Manages a lightweight FFmpeg HLS-output preview process per channel.
 Completely isolated from the recording pipeline.
@@ -8,25 +8,27 @@ Architecture
 ────────────
 Each channel that has preview started via the API gets:
 
-1. A separate FFmpeg subprocess that:
-   - Reads from the same capture device as recording
-   - Scales video down + reduces fps
-   - Disables audio
-   - Writes HLS output: index.m3u8 + seg*.ts segments under
-     data/preview/{channel_id}/
+1. A separate FFmpeg subprocess that either:
+   a) direct_capture: reads from the same capture device as recording, or
+   b) from_recording_output: reads a completed segment from 1_record / 2_chunks,
+      loops it at real-time speed, and switches to a newer file whenever the
+      watchdog detects one.
 
 2. The API layer serves index.m3u8 and .ts segments via FileResponse
    endpoints that are protected with JWT auth (any role can view).
 
-3. A light watchdog that marks the preview DOWN if the process exits —
-   it NEVER auto-restarts and NEVER touches the recording pipeline.
+3. A light watchdog that:
+   - marks the preview DOWN if the process exits unexpectedly.
+   - for from_recording_output mode: restarts with a newer completed segment
+     whenever one appears, giving a "rolling delayed preview" without ever
+     touching the capture device.
 
 Isolation guarantees
 ────────────────────
 - HlsPreviewManager is a completely separate singleton from ProcessManager.
 - A preview crash NEVER touches the recording state.
 - The recording watchdog and restart logic are not involved.
-- Preview watchdog only marks DOWN; it does NOT auto-restart.
+- Preview watchdog only marks DOWN; it does NOT auto-restart direct_capture mode.
 
 Phase 9 additions
 ────────────────────
@@ -36,6 +38,16 @@ Phase 9 additions
   preview_startup_timeout_seconds, the preview is marked "failed".
 - failed_reason: last failure message stored so the UI can display it.
 - get_log_tail(): expose preview FFmpeg stderr for in-browser admin view.
+
+Phase 10 additions
+────────────────────
+- from_recording_output mode: preview reads completed segment files so the
+  capture device is never opened by the preview process.
+- _find_latest_usable_segment() / _find_newer_segment() module helpers.
+- Pending mode: if no segment is available at start time, preview is queued
+  and the watchdog starts it automatically when recording produces its first
+  completed file.
+- Watchdog switches to a newer completed segment as soon as one appears.
 """
 from __future__ import annotations
 
@@ -49,9 +61,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from ..config.settings import get_settings
+from ..config.settings import get_settings, resolve_channel_path
 from ..models.schemas import ChannelConfig, PreviewHealth
-from .ffmpeg_builder import build_hls_preview_command, format_command_for_log
+from .ffmpeg_builder import (
+    build_hls_preview_command,
+    build_hls_preview_from_file_command,
+    format_command_for_log,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +117,84 @@ def _playlist_has_segment(playlist: Path) -> bool:
         return False
 
 
-# ─── Per-channel HLS preview state ────────────────────────────────────────────
+def _safe_mtime(p: Path) -> float:
+    """Return the mtime of *p*, or 0.0 on any OS error."""
+    try:
+        return p.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _find_latest_usable_segment(record_dir: Path, chunks_dir: Path) -> Optional[Path]:
+    """
+    Find the latest completed .mp4 segment suitable for file-based preview.
+
+    Strategy:
+    - In *record_dir*: all ``.mp4`` files **except** the most recently modified
+      one (which is the segment currently being written by FFmpeg recording).
+    - If nothing is found in *record_dir*, fall back to the latest file in
+      *chunks_dir* (files moved from ``1_record`` after completion).
+
+    Returns ``None`` if no usable segment exists yet (e.g. recording just
+    started and the first segment is still being written).
+    """
+    # Check record_dir — the newest file is being written; skip it.
+    try:
+        if record_dir.exists():
+            mp4s = sorted(record_dir.glob("*.mp4"), key=_safe_mtime)
+            completed = mp4s[:-1]  # all except the newest (currently recording)
+            if completed:
+                return completed[-1]  # most recent completed segment
+    except OSError:
+        pass
+
+    # Fall back to chunks_dir (completed segments that have been moved there).
+    try:
+        if chunks_dir.exists():
+            mp4s = sorted(chunks_dir.glob("*.mp4"), key=_safe_mtime)
+            if mp4s:
+                return mp4s[-1]
+    except OSError:
+        pass
+
+    return None
+
+
+def _find_newer_segment(
+    current_file: Path,
+    record_dir: Path,
+    chunks_dir: Path,
+) -> Optional[Path]:
+    """
+    Return a completed segment file that is newer than *current_file*, or
+    ``None`` if no newer segment is available yet.
+    """
+    current_mtime = _safe_mtime(current_file) if current_file.exists() else 0.0
+
+    # Check record_dir (skip the currently-recording newest file).
+    try:
+        if record_dir.exists():
+            mp4s = sorted(record_dir.glob("*.mp4"), key=_safe_mtime)
+            completed = mp4s[:-1]
+            for f in reversed(completed):
+                if _safe_mtime(f) > current_mtime and f != current_file:
+                    return f
+    except OSError:
+        pass
+
+    # Check chunks_dir.
+    try:
+        if chunks_dir.exists():
+            for f in sorted(chunks_dir.glob("*.mp4"), key=_safe_mtime, reverse=True):
+                if _safe_mtime(f) > current_mtime and f != current_file:
+                    return f
+    except OSError:
+        pass
+
+    return None
+
+
+
 
 @dataclass
 class HlsPreviewInfo:
@@ -114,6 +207,11 @@ class HlsPreviewInfo:
     started_at: datetime
     process: subprocess.Popen
     health: PreviewHealth = field(default=PreviewHealth.HEALTHY)
+    # Phase 10 — file-based preview mode
+    # "direct_capture" or "from_recording_output"
+    input_mode: str = field(default="direct_capture")
+    # Path to the segment file currently being looped (from_recording_output only)
+    source_file: Optional[Path] = field(default=None)
 
     def is_alive(self) -> bool:
         return self.process.poll() is None
@@ -148,6 +246,13 @@ class HlsPreviewManager:
         self._previews: dict[str, HlsPreviewInfo] = {}
         # Phase 9: retain last failure info per channel so the UI can display it.
         self._failures: dict[str, HlsPreviewFailure] = {}
+        # Phase 10: from_recording_output pending and config stores.
+        # _pending_file_mode: channel_id → config for channels waiting for first
+        #   segment to appear (preview requested but no file available yet).
+        self._pending_file_mode: dict[str, ChannelConfig] = {}
+        # _file_mode_configs: channel_id → config for running file-based previews
+        #   (needed so the watchdog can find newer segments and restart).
+        self._file_mode_configs: dict[str, ChannelConfig] = {}
 
     # ── Internal helpers ──────────────────────────────────────────────────
 
@@ -244,8 +349,9 @@ class HlsPreviewManager:
     # ── Public interface ──────────────────────────────────────────────────
 
     def is_running(self, channel_id: str) -> bool:
+        """Return True if a preview process is running OR pending for *channel_id*."""
         self._reap_if_dead(channel_id)
-        return channel_id in self._previews
+        return channel_id in self._previews or channel_id in self._pending_file_mode
 
     def get_pid(self, channel_id: str) -> Optional[int]:
         self._reap_if_dead(channel_id)
@@ -270,26 +376,28 @@ class HlsPreviewManager:
             return _tail_file(failure.log_path, lines)
         return []
 
-    def start_preview(self, channel_id: str, config: ChannelConfig) -> HlsPreviewInfo:
+    def start_preview(
+        self, channel_id: str, config: ChannelConfig
+    ) -> Optional[HlsPreviewInfo]:
         """
         Launch an HLS preview FFmpeg process for *channel_id*.
 
-        - Raises RuntimeError if preview.input_mode == "disabled".
-        - Raises RuntimeError if a preview is already running.
-        - Cleans old .ts files and playlist in the output directory first.
-        - stderr goes to a timestamped log file.
+        Returns the ``HlsPreviewInfo`` when a process is started immediately,
+        or ``None`` when the channel is queued in pending mode (i.e.
+        ``input_mode == "from_recording_output"`` but no completed segment is
+        available yet — the watchdog will start it automatically).
+
+        Raises:
+          RuntimeError  if ``preview.input_mode == "disabled"``
+          RuntimeError  if a preview (or pending request) is already active.
         """
         input_mode = getattr(config.preview, "input_mode", "direct_capture")
         if input_mode == "disabled":
             raise RuntimeError(
                 f"Preview for channel '{channel_id}' is disabled "
                 "(preview.input_mode = 'disabled' in channel config). "
-                "This is typically set on systems with a single capture device "
-                "that is already owned by the recording process."
-            )
-        if input_mode == "from_recording_output":
-            raise RuntimeError(
-                "preview.input_mode = 'from_recording_output' is not yet implemented."
+                "On systems with a single capture device already owned by "
+                "recording, set input_mode = 'from_recording_output' instead."
             )
 
         if self.is_running(channel_id):
@@ -300,6 +408,25 @@ class HlsPreviewManager:
         # Clear any previous failure record when starting fresh.
         self._failures.pop(channel_id, None)
 
+        # ── from_recording_output mode ────────────────────────────────────
+        if input_mode == "from_recording_output":
+            record_dir = resolve_channel_path(config.paths.record_dir)
+            chunks_dir = resolve_channel_path(config.paths.chunks_dir)
+            source_file = _find_latest_usable_segment(record_dir, chunks_dir)
+            if source_file is None:
+                # No completed segment yet — queue as pending.
+                self._pending_file_mode[channel_id] = config
+                self._file_mode_configs[channel_id] = config
+                logger.info(
+                    "[hls-preview][%s] from_recording_output: no completed segment "
+                    "available yet; preview queued — watchdog will start it when "
+                    "recording produces its first segment.",
+                    channel_id,
+                )
+                return None
+            return self._start_from_file(channel_id, config, source_file)
+
+        # ── direct_capture mode (original behavior) ───────────────────────
         output_dir = self._output_dir(channel_id)
         self._clean_output_dir(output_dir)
 
@@ -339,6 +466,7 @@ class HlsPreviewManager:
             started_at=started_at,
             process=process,
             health=PreviewHealth.HEALTHY,
+            input_mode="direct_capture",
         )
         self._previews[channel_id] = info
 
@@ -352,16 +480,24 @@ class HlsPreviewManager:
         """
         Stop the HLS preview process for *channel_id*.
 
-        Returns True if a process was stopped, False if not running.
-        Also clears any stored failure record.
+        Returns True if a process (or pending request) was stopped, False if
+        not running.
+        Also clears any stored failure record and pending state.
         Uses SIGTERM → timeout → SIGKILL.
         """
         self._reap_if_dead(channel_id)
-        # Clear failure record on explicit stop.
+        # Clear failure record and pending/file-mode state on explicit stop.
         self._failures.pop(channel_id, None)
+        # Phase 10: clear pending / file-mode configs
+        was_pending = channel_id in self._pending_file_mode
+        self._pending_file_mode.pop(channel_id, None)
+        self._file_mode_configs.pop(channel_id, None)
 
         info = self._previews.get(channel_id)
         if info is None:
+            if was_pending:
+                logger.info("[hls-preview][%s] Pending preview cancelled.", channel_id)
+                return True
             logger.info("[hls-preview][%s] Stop requested but not running.", channel_id)
             return False
 
@@ -407,6 +543,20 @@ class HlsPreviewManager:
         info = self._previews.get(channel_id)
 
         if info is None:
+            # Phase 10: pending mode (waiting for first segment to appear)
+            if channel_id in self._pending_file_mode:
+                return {
+                    "running": False,
+                    "pid": None,
+                    "started_at": None,
+                    "playlist_url": None,
+                    "health": PreviewHealth.UNKNOWN,
+                    "playlist_ready": False,
+                    "startup_status": "starting",
+                    "stderr_tail": [],
+                    "failed_reason": None,
+                }
+
             failure = self._failures.get(channel_id)
             if failure:
                 return {
@@ -452,32 +602,244 @@ class HlsPreviewManager:
         """Return the HLS output directory path (always valid, may not exist yet)."""
         return self._output_dir(channel_id)
 
+    # ── File-based preview helpers (from_recording_output) ────────────────
+
+    def _start_from_file(
+        self, channel_id: str, config: ChannelConfig, source_file: Path
+    ) -> HlsPreviewInfo:
+        """
+        Start a file-based HLS preview process for *channel_id*.
+
+        Cleans the HLS output directory, then launches FFmpeg to loop
+        *source_file* at real-time speed and produce HLS output.
+        """
+        output_dir = self._output_dir(channel_id)
+        self._clean_output_dir(output_dir)
+
+        cmd = build_hls_preview_from_file_command(config, source_file, output_dir)
+        log_path = self._new_log_path(channel_id)
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with open(log_path, "w", encoding="utf-8") as lf:
+            lf.write(
+                f"[{now_iso}] HLS PREVIEW FROM FILE: {source_file}\n"
+                f"[{now_iso}] COMMAND: {format_command_for_log(cmd)}\n"
+                f"[{now_iso}] STARTING\n"
+            )
+
+        logger.info(
+            "[hls-preview][%s] from_recording_output: starting from %s",
+            channel_id, source_file.name,
+        )
+
+        log_fh = open(log_path, "ab")
+        try:
+            extra: dict = {}
+            if sys.platform == "win32":
+                extra["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=log_fh,
+                **extra,
+            )
+        finally:
+            log_fh.close()
+
+        started_at = datetime.now(timezone.utc)
+        info = HlsPreviewInfo(
+            channel_id=channel_id,
+            pid=process.pid,
+            log_path=log_path,
+            output_dir=output_dir,
+            started_at=started_at,
+            process=process,
+            health=PreviewHealth.HEALTHY,
+            input_mode="from_recording_output",
+            source_file=source_file,
+        )
+        self._previews[channel_id] = info
+        self._file_mode_configs[channel_id] = config
+
+        logger.info(
+            "[hls-preview][%s] from_recording_output: PID %d looping %s",
+            channel_id, process.pid, source_file.name,
+        )
+        return info
+
+    def _switch_to_newer_file(
+        self, channel_id: str, config: ChannelConfig, new_file: Path
+    ) -> None:
+        """
+        Kill the current file-based preview process and restart with *new_file*.
+
+        Called by the watchdog when a newer completed segment is detected.
+        """
+        info = self._previews.get(channel_id)
+        if info:
+            logger.info(
+                "[hls-preview][%s] from_recording_output: newer segment %s found, "
+                "switching from %s.",
+                channel_id,
+                new_file.name,
+                info.source_file.name if info.source_file else "?",
+            )
+            try:
+                info.process.kill()
+                info.process.wait(timeout=5)
+            except Exception as exc:
+                logger.warning(
+                    "[hls-preview][%s] Error killing process for file switch: %s",
+                    channel_id, exc,
+                )
+            del self._previews[channel_id]
+
+        try:
+            self._start_from_file(channel_id, config, new_file)
+        except Exception as exc:
+            logger.error(
+                "[hls-preview][%s] Failed to start with new file %s: %s",
+                channel_id, new_file.name, exc,
+            )
+            self._failures[channel_id] = HlsPreviewFailure(
+                reason=f"Failed to restart preview with {new_file.name}: {exc}",
+                log_path=None,
+                failed_at=datetime.now(timezone.utc),
+            )
+
+    def _handle_file_mode_process_exit(
+        self, channel_id: str, config: ChannelConfig, old_info: HlsPreviewInfo
+    ) -> None:
+        """
+        Called when a file-based preview process exits.
+
+        Looks for a newer completed segment and restarts, or falls back to
+        pending mode if none is available.
+        """
+        rc = old_info.process.poll()
+        logger.info(
+            "[hls-preview][%s] from_recording_output: FFmpeg finished "
+            "(code=%s), searching for next segment.",
+            channel_id, rc,
+        )
+        del self._previews[channel_id]
+
+        record_dir = resolve_channel_path(config.paths.record_dir)
+        chunks_dir = resolve_channel_path(config.paths.chunks_dir)
+        # Try to find any newer segment; fall back to the same or latest available.
+        if old_info.source_file:
+            next_file = _find_newer_segment(old_info.source_file, record_dir, chunks_dir)
+        else:
+            next_file = None
+        if next_file is None:
+            next_file = _find_latest_usable_segment(record_dir, chunks_dir)
+
+        if next_file:
+            try:
+                self._start_from_file(channel_id, config, next_file)
+            except Exception as exc:
+                logger.error(
+                    "[hls-preview][%s] from_recording_output: restart failed: %s",
+                    channel_id, exc,
+                )
+                self._failures[channel_id] = HlsPreviewFailure(
+                    reason=f"Restart after file end failed: {exc}",
+                    log_path=old_info.log_path,
+                    failed_at=datetime.now(timezone.utc),
+                )
+        else:
+            # No segment available — go back to pending.
+            logger.info(
+                "[hls-preview][%s] from_recording_output: no segment after exit, "
+                "going back to pending.",
+                channel_id,
+            )
+            self._pending_file_mode[channel_id] = config
+
     # ── Watchdog ──────────────────────────────────────────────────────────
 
     def check_all(self) -> None:
         """
         Called by the HLS preview watchdog loop.
 
-        - Checks liveness — marks DOWN if the process has exited.
-        - Checks startup timeout — kills and marks "failed" if no playlist after timeout.
-        - Does NOT auto-restart (keeps recording pipeline unaffected).
+        1. Pending channels (from_recording_output, waiting for first segment):
+           Try to find a segment and start the process.
+
+        2. Running channels:
+           a. direct_capture: marks DOWN if the process has exited; checks
+              startup timeout.  Does NOT auto-restart.
+           b. from_recording_output: if a newer segment is available, switch
+              to it.  If the process has exited, restart with the next segment
+              (or return to pending if none available).
         """
+        # ── Handle pending file-mode channels ─────────────────────────────
+        for channel_id, config in list(self._pending_file_mode.items()):
+            record_dir = resolve_channel_path(config.paths.record_dir)
+            chunks_dir = resolve_channel_path(config.paths.chunks_dir)
+            source_file = _find_latest_usable_segment(record_dir, chunks_dir)
+            if source_file is not None:
+                del self._pending_file_mode[channel_id]
+                logger.info(
+                    "[hls-preview][%s] from_recording_output: segment %s now "
+                    "available — starting preview.",
+                    channel_id, source_file.name,
+                )
+                try:
+                    self._start_from_file(channel_id, config, source_file)
+                except Exception as exc:
+                    logger.error(
+                        "[hls-preview][%s] from_recording_output: failed to start: %s",
+                        channel_id, exc,
+                    )
+                    self._failures[channel_id] = HlsPreviewFailure(
+                        reason=f"Failed to start from file: {exc}",
+                        log_path=None,
+                        failed_at=datetime.now(timezone.utc),
+                    )
+
+        # ── Handle running previews ────────────────────────────────────────
         for channel_id in list(self._previews):
             info = self._previews.get(channel_id)
             if info is None:
                 continue
+
             if not info.is_alive():
-                logger.warning(
-                    "[hls-preview][%s] Process PID %d exited — marking DOWN.",
-                    channel_id, info.pid,
-                )
-                info.mark_down()
-                # _reap_if_dead will record failure if needed on next status check.
-                self._reap_if_dead(channel_id)
+                if info.input_mode == "from_recording_output":
+                    config = self._file_mode_configs.get(channel_id)
+                    if config:
+                        self._handle_file_mode_process_exit(channel_id, config, info)
+                    else:
+                        # No config stored — fall back to generic failure handling.
+                        info.mark_down()
+                        self._reap_if_dead(channel_id)
+                else:
+                    # direct_capture: mark down, record failure if no playlist.
+                    logger.warning(
+                        "[hls-preview][%s] Process PID %d exited — marking DOWN.",
+                        channel_id, info.pid,
+                    )
+                    info.mark_down()
+                    self._reap_if_dead(channel_id)
             else:
-                self._check_startup_timeout(channel_id)
+                if info.input_mode == "from_recording_output":
+                    # Check for a newer completed segment.
+                    config = self._file_mode_configs.get(channel_id)
+                    if config and info.source_file:
+                        record_dir = resolve_channel_path(config.paths.record_dir)
+                        chunks_dir = resolve_channel_path(config.paths.chunks_dir)
+                        newer = _find_newer_segment(
+                            info.source_file, record_dir, chunks_dir
+                        )
+                        if newer:
+                            self._switch_to_newer_file(channel_id, config, newer)
+                            continue
+                else:
+                    # direct_capture: check startup timeout.
+                    self._check_startup_timeout(channel_id)
+
                 if channel_id in self._previews:
-                    info.mark_healthy()
+                    self._previews[channel_id].mark_healthy()
 
     # ── Helpers ───────────────────────────────────────────────────────────
 

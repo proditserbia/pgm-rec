@@ -119,24 +119,12 @@ def start_preview(channel_id: str, db: DbDep, _: AdminDep):
     pm = get_hls_preview_manager()
     config = ChannelConfig.model_validate_json(ch.config_json)
     try:
-        info = pm.start_preview(channel_id, config)
+        pm.start_preview(channel_id, config)
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to start preview: {exc}")
-    status = pm.preview_status(channel_id)
-    return HlsPreviewStatusResponse(
-        channel_id=channel_id,
-        running=True,
-        pid=info.pid,
-        started_at=info.started_at,
-        playlist_url=status["playlist_url"],
-        health=info.health,
-        playlist_ready=status["playlist_ready"],
-        startup_status=status["startup_status"],
-        stderr_tail=status["stderr_tail"],
-        failed_reason=None,
-    )
+    return _hls_status_response(channel_id)
 
 
 @router.post(

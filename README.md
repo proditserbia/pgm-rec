@@ -692,8 +692,39 @@ the playlist is ready.  Wait for the status to change to "Running".
 On systems with a **single Blackmagic Decklink input**, the recording process
 already owns the device.  The preview process cannot open the same device
 concurrently, so it exits immediately and the playlist is never created.
+This produces "Could not RenderStream" or similar errors in the preview FFmpeg
+log.
 
-Fix: set `preview.input_mode = "disabled"` in the channel JSON config:
+**Recommended fix — `from_recording_output` mode (Phase 10)**
+
+Set `preview.input_mode = "from_recording_output"` in the channel JSON config:
+
+```json
+{
+  "preview": {
+    "input_mode": "from_recording_output"
+  }
+}
+```
+
+In this mode PGMRec **never opens the capture device** for preview.  Instead,
+it reads the latest completed segment file from `1_record/` (or `2_chunks/`)
+and loops it at real-time speed to produce a low-resolution HLS stream.
+
+Behaviour in `from_recording_output` mode:
+- If no completed segment is available yet (recording just started), the
+  preview is queued automatically.  The watchdog will start it as soon as the
+  first 5-minute segment is ready.  The UI shows "Starting preview…" until
+  then.
+- Once a preview is running, the watchdog checks every ~10 seconds for a newer
+  completed segment.  When one appears, it switches to it automatically —
+  giving a rolling, ~5-minute-delayed view of the last completed recording
+  segment.
+- Recording is completely unaffected; both processes share no state.
+
+**Alternative — disable preview entirely**
+
+If you do not need in-browser preview at all, set `input_mode = "disabled"`:
 
 ```json
 {

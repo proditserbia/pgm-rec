@@ -199,7 +199,8 @@ def build_hls_preview_command(config: ChannelConfig, output_dir: Path) -> list[s
     Build an FFmpeg HLS preview command as a subprocess argument list — Phase 5.
 
     Produces a low-resolution HLS stream (index.m3u8 + *.ts segments) written
-    to *output_dir*.  Completely isolated from the recording pipeline.
+    to *output_dir*.  Uses the hardware capture device directly
+    (``input_mode == "direct_capture"``).
 
     Key properties:
     - Same capture source as recording (hardware must support concurrent access)
@@ -211,15 +212,18 @@ def build_hls_preview_command(config: ChannelConfig, output_dir: Path) -> list[s
     Safe for ``subprocess.Popen(cmd, shell=False)``.
     Never pass the result to a shell — it is not shell-escaped.
 
-    Phase 9 notes:
+    Notes:
     - input_mode == "disabled": raises ValueError — caller should have blocked
       this earlier; this is a safety belt.
-    - input_mode == "from_recording_output": not yet implemented.
+    - input_mode == "from_recording_output": use
+      :func:`build_hls_preview_from_file_command` instead; the caller is
+      responsible for selecting the source file.
     - input_mode == "direct_capture" (default): opens the same hardware device.
       On systems with a single Blackmagic Decklink input this WILL fail if
       recording is already running, because the Decklink SDK only allows one
-      owner per input.  Set preview.input_mode = "disabled" in channel JSON to
-      prevent the attempt entirely.
+      owner per input.  Set preview.input_mode = "from_recording_output" to
+      avoid this — preview will read completed segments instead of opening
+      the device.
     """
     cap = config.capture
     preview = config.preview
@@ -232,7 +236,8 @@ def build_hls_preview_command(config: ChannelConfig, output_dir: Path) -> list[s
         )
     if input_mode == "from_recording_output":
         raise ValueError(
-            "input_mode='from_recording_output' is not yet implemented."
+            "build_hls_preview_command called with input_mode='from_recording_output'. "
+            "Use build_hls_preview_from_file_command() for file-based preview."
         )
 
     playlist_path = str(output_dir / "index.m3u8")
@@ -266,6 +271,74 @@ def build_hls_preview_command(config: ChannelConfig, output_dir: Path) -> list[s
     cmd += ["-hls_time", str(preview.segment_time)]
     cmd += ["-hls_list_size", str(preview.list_size)]
     # delete_segments: remove old .ts files; append_list: don't rewrite whole playlist
+    cmd += ["-hls_flags", "delete_segments+append_list"]
+    cmd += ["-hls_segment_filename", segment_pattern]
+
+    # ── Output playlist ────────────────────────────────────────────────────
+    cmd.append(playlist_path)
+
+    return cmd
+
+
+def build_hls_preview_from_file_command(
+    config: ChannelConfig,
+    input_file: Path,
+    output_dir: Path,
+) -> list[str]:
+    """
+    Build an FFmpeg HLS preview command that reads from a completed segment file.
+
+    Used for ``preview.input_mode = "from_recording_output"`` — Phase 10.
+
+    This approach **never opens the capture device**, so recording and preview
+    can coexist on single-input Blackmagic Decklink systems that allow only one
+    device owner at a time.
+
+    Behaviour:
+    - Reads *input_file* at real-time speed (``-re``) looping indefinitely
+      (``-stream_loop -1``).
+    - Produces the same low-res HLS output as the direct-capture command.
+    - The caller (HlsPreviewManager watchdog) is responsible for stopping the
+      process and restarting with a newer file when a newer completed segment
+      becomes available.
+
+    Safe for ``subprocess.Popen(cmd, shell=False)``.
+    Never pass the result to a shell — it is not shell-escaped.
+    """
+    preview = config.preview
+
+    playlist_path = str(output_dir / "index.m3u8")
+    segment_pattern = str(output_dir / "seg%05d.ts")
+
+    cmd: list[str] = [config.ffmpeg_path]
+
+    # ── Suppress interactive prompts ───────────────────────────────────────
+    cmd += ["-y"]
+
+    # ── Input: loop the file at real-time speed ────────────────────────────
+    # -re          : read at native playback speed (1×); avoids flooding HLS
+    # -stream_loop : loop indefinitely so preview never stops between segment
+    #                 switches; caller kills the process when a newer file appears
+    cmd += ["-re"]
+    cmd += ["-stream_loop", "-1"]
+    cmd += ["-i", str(input_file)]
+
+    # ── Video filters: scale + fps ─────────────────────────────────────────
+    cmd += ["-vf", f"scale={preview.width}:{preview.height},fps={preview.hls_fps}"]
+
+    # ── Disable audio (preview is video-only) ─────────────────────────────
+    cmd += ["-an"]
+
+    # ── Encoding ───────────────────────────────────────────────────────────
+    cmd += ["-c:v", preview.encoder]
+    if preview.encoder in ("libx264", "libx265"):
+        cmd += ["-preset", "ultrafast"]
+    cmd += ["-b:v", preview.video_bitrate]
+
+    # ── HLS muxer ─────────────────────────────────────────────────────────
+    cmd += ["-f", "hls"]
+    cmd += ["-hls_time", str(preview.segment_time)]
+    cmd += ["-hls_list_size", str(preview.list_size)]
     cmd += ["-hls_flags", "delete_segments+append_list"]
     cmd += ["-hls_segment_filename", segment_pattern]
 

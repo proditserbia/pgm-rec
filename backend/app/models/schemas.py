@@ -108,12 +108,15 @@ class PreviewConfig(BaseModel):
     encoder: str = "libx264"
     segment_time: int = 2
     list_size: int = 5
-    # Phase 9 — capture input mode for preview.
+    # Phase 9/10 — capture input mode for preview.
     # direct_capture: open the same hardware device as recording (default).
     #   Works when the hardware supports concurrent access (e.g. some v4l2
     #   drivers).  On single-input Blackmagic Decklink systems this WILL
     #   FAIL because the recording process already owns the device.
-    # from_recording_output: not yet implemented; reserved for future tee/pipe.
+    # from_recording_output: read completed segment files from record_dir /
+    #   chunks_dir instead of opening the device.  The preview is ~one segment
+    #   behind live (default segment_time = 5 min) but never contends for the
+    #   device.  This is the recommended mode for single-Decklink setups.
     # disabled: preview is explicitly disabled — start attempts return 409.
     input_mode: str = "direct_capture"
 

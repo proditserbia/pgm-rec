@@ -54,6 +54,7 @@
     "enabled": false,
     "port": 23001,
     "scale": "320:180",
-    "fps": 5
+    "fps": 5,
+    "input_mode": "from_recording_output"
   }
 }
