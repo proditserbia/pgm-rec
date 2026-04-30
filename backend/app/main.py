@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -36,7 +37,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .config.settings import get_settings
-from .db.models import Channel, User
+from .db.models import Channel, ExportJob, User
 from .db.session import get_session_factory, init_db
 from .models.schemas import ChannelConfig
 from .services.auth_service import create_user, get_user_by_username
@@ -124,11 +125,103 @@ def _seed_admin(db) -> None:
     )
 
 
+def _warn_default_credentials() -> None:
+    """
+    Phase 6.2 — emit CRITICAL log messages if default credentials are still in use.
+    Helps catch misconfigured production deployments before they become a problem.
+    """
+    settings = get_settings()
+    _DEFAULT_JWT = "change-me-in-production-pgmrec-secret"
+    _DEFAULT_PW = "pgmrec-admin"
+    _DEFAULT_USER = "admin"
+
+    if settings.jwt_secret_key == _DEFAULT_JWT:
+        logger.critical(
+            "⚠️  SECURITY: PGMREC_JWT_SECRET_KEY is set to the default value. "
+            "Generate a strong secret with: python -c \"import secrets; print(secrets.token_hex(32))\" "
+            "and set it in your .env before serving real traffic."
+        )
+    if settings.admin_password == _DEFAULT_PW:
+        logger.critical(
+            "⚠️  SECURITY: PGMREC_ADMIN_PASSWORD is set to the default 'pgmrec-admin'. "
+            "Change it before going to production."
+        )
+    if settings.admin_username == _DEFAULT_USER:
+        logger.warning(
+            "⚠️  SECURITY: PGMREC_ADMIN_USERNAME is still 'admin'. "
+            "Consider using a less predictable username in production."
+        )
+
+
+def _warn_multiple_workers() -> None:
+    """
+    Phase 6.2 — detect if multiple uvicorn workers are running.
+
+    PGMRec uses process-level singletons (ProcessManager, HlsPreviewManager,
+    ExportWorker).  Running with --workers > 1 would create separate instances
+    per worker that fight over the same FFmpeg processes and DB rows.
+    """
+    try:
+        import multiprocessing
+        # Check UVICORN_WORKERS env var (set by some deployments)
+        workers_env = os.environ.get("UVICORN_WORKERS", "")
+        if workers_env and workers_env.strip() not in ("", "1"):
+            logger.critical(
+                "⚠️  WORKERS=%s detected via UVICORN_WORKERS. "
+                "PGMRec MUST run with a single worker (--workers 1). "
+                "Multi-worker deployments will cause undefined behaviour.",
+                workers_env,
+            )
+            return
+
+        # Check WEB_CONCURRENCY (used by gunicorn / some frameworks)
+        concurrency = os.environ.get("WEB_CONCURRENCY", "")
+        if concurrency and concurrency.strip() not in ("", "1"):
+            logger.critical(
+                "⚠️  WEB_CONCURRENCY=%s detected. "
+                "PGMRec MUST run with a single worker. "
+                "Multi-worker deployments will cause undefined behaviour.",
+                concurrency,
+            )
+    except Exception:
+        pass  # never let this crash startup
+
+
+def _reconcile_stale_exports(db) -> None:
+    """
+    Phase 6.2 — mark any IN_PROGRESS / RUNNING export jobs as FAILED on startup.
+
+    If the server crashed or was force-killed while an export was running,
+    those jobs are stuck in 'running' status forever.  This pass detects and
+    resets them so the queue can proceed.
+    """
+    stale_statuses = ("running", "in_progress")
+    stale = (
+        db.query(ExportJob)
+        .filter(ExportJob.status.in_(stale_statuses))
+        .all()
+    )
+    if not stale:
+        return
+    for job in stale:
+        job.status = "failed"
+        job.error_message = "Server restarted while export was in progress — please re-run."
+    db.commit()
+    logger.warning(
+        "Reset %d stale export job(s) from in-progress → failed after server restart.",
+        len(stale),
+    )
+
+
 # ─── Application lifecycle ────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+
+    # Phase 6.2 — pre-flight safety checks (log before DB/services start)
+    _warn_multiple_workers()
+    _warn_default_credentials()
 
     # Ensure required directories exist
     for directory in (
@@ -138,7 +231,8 @@ async def lifespan(app: FastAPI):
     ):
         directory.mkdir(parents=True, exist_ok=True)
 
-    # Create DB tables (idempotent — safe on every restart)
+    # Create DB tables (idempotent — safe on every restart for SQLite dev/test).
+    # For PostgreSQL production, tables are managed by Alembic migrations.
     init_db()
 
     SessionLocal = get_session_factory()
@@ -150,6 +244,14 @@ async def lifespan(app: FastAPI):
     # Seed default admin user (Phase 4)
     with SessionLocal() as db:
         _seed_admin(db)
+
+    # Phase 6.2 — Reset any export jobs that were stuck in-progress after a crash
+    with SessionLocal() as db:
+        _reconcile_stale_exports(db)
+
+    # Phase 6.2 — Load restart history from DB into in-memory backoff counters
+    with SessionLocal() as db:
+        get_process_manager().load_restart_history_from_db(db)
 
     # Reconcile any stale process records from a previous run
     # (adopts live orphaned PIDs; marks dead ones as stopped)

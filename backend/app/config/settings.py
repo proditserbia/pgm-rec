@@ -61,6 +61,11 @@ class Settings(BaseSettings):
     # Retention cleaner
     retention_run_interval_seconds: int = 3600  # once per hour
 
+    # Phase 6.2 — Event table pruning
+    # Watchdog events and segment anomalies older than this many days are deleted
+    # by the retention scheduler (0 = disabled).
+    event_retention_days: int = 90
+
     # Log management
     # Maximum number of log files to keep per channel (oldest are deleted)
     log_max_files_per_channel: int = 30
@@ -140,6 +145,11 @@ class Settings(BaseSettings):
     ffmpeg_path_override: str = ""
     # Absolute path to ffprobe binary.  Used by manifest/export services.
     ffprobe_path: str = "ffprobe"
+
+    # Phase 6.2 — Disk safety
+    # Minimum free disk bytes required before starting/restarting FFmpeg recording.
+    # Default: 500 MB.  Set to 0 to disable the check.
+    min_free_disk_bytes: int = 500 * 1024 * 1024  # 500 MB
 
 
 _settings: Settings | None = None

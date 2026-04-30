@@ -227,3 +227,21 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(32), default="preview", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+
+
+class RestartHistoryRecord(Base):
+    """
+    Persisted per-channel FFmpeg restart attempt — Phase 6.2.
+
+    Supplements the in-memory _RestartHistory so that backoff counters survive
+    a server restart.  Loaded into memory on startup; written on every auto-restart
+    attempt.  Old rows are pruned by the retention scheduler.
+    """
+
+    __tablename__ = "restart_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    channel_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("channels.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    attempted_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False, index=True)

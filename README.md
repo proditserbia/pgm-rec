@@ -27,11 +27,77 @@ built on FFmpeg + FastAPI + React.
 ## Architecture
 
 ```
-backend/   FastAPI + SQLite backend (uvicorn)
+backend/   FastAPI + PostgreSQL/SQLite backend (uvicorn)
 frontend/  React 18 + TypeScript + Vite web UI (all assets bundled locally — no CDN)
 scripts/   Deployment helpers (Linux + Windows)
 docs/      Configuration examples
 ```
+
+---
+
+## Database — SQLite vs PostgreSQL
+
+| | SQLite | PostgreSQL |
+|---|---|---|
+| **Recommended for** | Development, testing, single-channel trials | **Production, 24/7 multi-channel recording** |
+| **Setup** | Zero — file is created automatically | Requires PostgreSQL server |
+| **Concurrency** | Limited (WAL mode enabled automatically) | Full MVCC — safe for concurrent reads/writes |
+| **Stability under load** | Can block under sustained write pressure | Handles continuous write load without issue |
+| **Data persistence** | Single `.db` file | Managed server with backup tools |
+
+**For any 24/7 production deployment, PostgreSQL is strongly recommended.**
+
+### Using PostgreSQL
+
+1. Install PostgreSQL 15+ on your server (or use the Docker Compose setup which includes it automatically).
+
+2. Create the database and user:
+   ```sql
+   CREATE USER pgmrec WITH PASSWORD 'your-strong-password';
+   CREATE DATABASE pgmrec OWNER pgmrec;
+   ```
+
+3. Set the database URL in `.env`:
+   ```env
+   PGMREC_DATABASE_URL=postgresql+psycopg://pgmrec:your-strong-password@localhost:5432/pgmrec
+   ```
+
+4. Run database migrations (from `backend/` directory):
+   ```bash
+   cd backend
+   alembic upgrade head
+   ```
+
+5. Start PGMRec normally.  The app reads `PGMREC_DATABASE_URL` automatically.
+
+### Running Alembic migrations
+
+```bash
+cd backend
+
+# Apply all pending migrations (always run after git pull on PostgreSQL)
+alembic upgrade head
+
+# Show current migration state
+alembic current
+
+# Show migration history
+alembic history
+
+# Roll back one migration
+alembic downgrade -1
+```
+
+> **Note for SQLite dev/test:** Tables are created automatically by SQLAlchemy
+> on first startup.  Alembic is only required for PostgreSQL production.
+>
+> If you already have an existing SQLite database and want to bring it under
+> Alembic management (so future migrations apply cleanly), run:
+> ```bash
+> alembic stamp head
+> ```
+> This tells Alembic "the database is already at the latest migration" without
+> re-running the initial migration.
 
 ---
 
@@ -87,10 +153,13 @@ cp .env.example .env
 #   PGMREC_JWT_SECRET_KEY=<generate: python -c "import secrets; print(secrets.token_hex(32))">
 #   PGMREC_ADMIN_PASSWORD=<strong password>
 
-# 4. Start
+# 4. Start (includes PostgreSQL 15 — no separate setup needed)
 docker compose up -d
 
-# 5. Access (this machine only)
+# 5. Apply database migrations (first time only; safe to re-run)
+docker compose exec backend alembic upgrade head
+
+# 6. Access (this machine only)
 # http://localhost:8000
 ```
 
@@ -342,9 +411,11 @@ cp .env.example .env
 | `PGMREC_LOGS_DIR` | Log file directory | `backend/logs` |
 | `PGMREC_FFMPEG_PATH_OVERRIDE` | Global FFmpeg binary override | (per-channel) |
 | `PGMREC_FFPROBE_PATH` | FFprobe binary | `ffprobe` |
-| `PGMREC_DATABASE_URL` | SQLite URL | `sqlite:///backend/pgmrec.db` |
+| `PGMREC_DATABASE_URL` | SQLite or PostgreSQL URL | `sqlite:///backend/pgmrec.db` |
 | `PGMREC_MAX_CONCURRENT_EXPORTS` | Parallel export jobs | `2` |
 | `PGMREC_EXPORT_RETENTION_DAYS` | Days to keep exports (0=off) | `30` |
+| `PGMREC_MIN_FREE_DISK_BYTES` | Min free disk before recording starts | `524288000` (500 MB) |
+| `PGMREC_EVENT_RETENTION_DAYS` | Days to keep watchdog/anomaly rows | `90` |
 
 See `.env.example` for the complete annotated list.
 
@@ -374,6 +445,8 @@ See `.env.example` for the complete annotated list.
 
 ## 8. Backup & Restore
 
+### SQLite
+
 ```bash
 # Backup DB + channel configs + manifests + .env (excludes large recording files)
 python scripts/backup_data.py
@@ -386,6 +459,22 @@ python scripts/restore_data.py pgmrec-backup-....zip --dry-run
 sudo systemctl stop pgmrec
 python scripts/restore_data.py pgmrec-backup-....zip
 sudo systemctl start pgmrec
+```
+
+### PostgreSQL
+
+```bash
+# Dump the database (run on the server or via Docker):
+pg_dump -U pgmrec -h localhost pgmrec > pgmrec-$(date +%Y%m%d_%H%M%S).sql
+
+# Docker Compose backup:
+docker exec pgmrec-postgres pg_dump -U pgmrec pgmrec > pgmrec-backup.sql
+
+# Restore:
+psql -U pgmrec -h localhost pgmrec < pgmrec-backup.sql
+
+# Docker Compose restore:
+docker exec -i pgmrec-postgres psql -U pgmrec pgmrec < pgmrec-backup.sql
 ```
 
 ---

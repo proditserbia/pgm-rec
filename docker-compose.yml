@@ -1,6 +1,10 @@
 # ─── PGMRec — docker-compose.yml ─────────────────────────────────────────────
 #
-# Brings up the PGMRec backend (and optionally an Nginx reverse proxy).
+# Phase 6.2: PostgreSQL added as primary production database.
+#
+# Brings up:
+#   - postgres    PostgreSQL 15 database (primary production DB)
+#   - backend     PGMRec FastAPI application
 #
 # ⚠️  LAN-only application — NOT designed for public internet access.
 #     Do not open port 8000 to the internet without a firewall rule.
@@ -26,6 +30,26 @@
 
 services:
 
+  # ── PostgreSQL 15 ─────────────────────────────────────────────────────────
+  # Primary database for production.  Data is stored in a named Docker volume
+  # that persists across container restarts and upgrades.
+  postgres:
+    image: postgres:15-alpine
+    container_name: pgmrec-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pgmrec
+      POSTGRES_USER: pgmrec
+      POSTGRES_PASSWORD: pgmrec
+    volumes:
+      - pgmrec-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pgmrec -d pgmrec"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   backend:
     build:
       context: .
@@ -34,6 +58,10 @@ services:
     container_name: pgmrec-backend
     restart: unless-stopped
     env_file: .env
+    environment:
+      # Point the backend at the PostgreSQL container.
+      # Override in .env to use a different DB URL (e.g. external PostgreSQL).
+      PGMREC_DATABASE_URL: postgresql+psycopg://pgmrec:pgmrec@postgres:5432/pgmrec
     ports:
       # Bind to loopback by default — only this machine can reach port 8000.
       # Change to "0.0.0.0:8000:8000" for LAN access.
@@ -44,13 +72,16 @@ services:
       - pgmrec-logs:/app/logs
       # Mount channel configs from host for easy editing without rebuilding
       # - ./backend/data/channels:/app/data/channels:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 15s
+      start_period: 30s
 
   # ── Optional: Nginx reverse proxy ─────────────────────────────────────────
   # Useful for LAN-wide access via a hostname or custom port, or to add
@@ -72,5 +103,6 @@ services:
   #     - backend
 
 volumes:
+  pgmrec-pgdata:
   pgmrec-data:
   pgmrec-logs:

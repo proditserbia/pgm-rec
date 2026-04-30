@@ -13,11 +13,17 @@ Phase 1.6 additions:
   - Restart backoff: sliding-window restart counter + COOLDOWN state per channel
   - DEGRADED / COOLDOWN health states
   - Pre-delay between stop and start during auto-restart
+
+Phase 6.2 additions:
+  - Disk space check before starting FFmpeg (PGMREC_MIN_FREE_DISK_BYTES).
+  - Restart history persisted to DB (restart_history table) so backoff
+    counters survive server restarts.
 """
 from __future__ import annotations
 
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -31,7 +37,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from ..config.settings import get_settings
-from ..db.models import ProcessRecord
+from ..db.models import ProcessRecord, RestartHistoryRecord
 from ..models.schemas import ChannelConfig, HealthStatus, ProcessStatus
 from .ffmpeg_builder import build_ffmpeg_command, format_command_for_log
 
@@ -409,6 +415,9 @@ class ProcessManager:
         Returns True if the caller should proceed with the restart.
         Returns False if the channel is in cooldown or just entered cooldown.
         Also sets health to DEGRADED when multiple restarts have occurred.
+
+        Phase 6.2: persists the restart attempt to the DB so the backoff
+        counters survive server restarts.
         """
         settings = get_settings()
         hist = self._get_or_create_history(channel_id)
@@ -422,8 +431,11 @@ class ProcessManager:
             )
             return False
 
-        # Record this attempt
+        # Record this attempt in memory
         hist.record_attempt()
+        # Persist to DB (best-effort; never blocks or crashes the watchdog)
+        self._persist_restart_attempt(channel_id)
+
         count = hist.count_in_window(settings.restart_backoff_window_seconds)
 
         # Too many restarts → enter cooldown
@@ -445,6 +457,51 @@ class ProcessManager:
 
         return True
 
+    def _persist_restart_attempt(self, channel_id: str) -> None:
+        """Insert a restart_history row for *channel_id* (best-effort)."""
+        try:
+            from ..db.session import get_session_factory
+            SessionLocal = get_session_factory()
+            with SessionLocal() as db:
+                db.add(RestartHistoryRecord(
+                    channel_id=channel_id,
+                    attempted_at=datetime.now(timezone.utc),
+                ))
+                db.commit()
+        except Exception as exc:
+            logger.warning("[%s] Could not persist restart history: %s", channel_id, exc)
+
+    def load_restart_history_from_db(self, db: Session) -> None:
+        """
+        Phase 6.2: called once at startup.
+
+        Loads recent restart_history rows from the DB into in-memory
+        _RestartHistory objects so that backoff counters survive server restarts.
+        Only rows within the backoff window are loaded.
+        """
+        from datetime import timedelta
+        settings = get_settings()
+        window_seconds = settings.restart_backoff_window_seconds
+        since = datetime.now(timezone.utc) - timedelta(seconds=window_seconds)
+
+        try:
+            rows = (
+                db.query(RestartHistoryRecord)
+                .filter(RestartHistoryRecord.attempted_at >= since)
+                .order_by(RestartHistoryRecord.attempted_at)
+                .all()
+            )
+            for row in rows:
+                hist = self._get_or_create_history(row.channel_id)
+                hist._timestamps.append(row.attempted_at)
+            if rows:
+                logger.info(
+                    "[process-manager] Loaded %d restart history record(s) from DB.",
+                    len(rows),
+                )
+        except Exception as exc:
+            logger.warning("[process-manager] Could not load restart history: %s", exc)
+
     # ── Core lifecycle ────────────────────────────────────────────────────
 
     def start(self, channel_id: str, config: ChannelConfig, db: Session) -> ProcessInfo:
@@ -454,9 +511,32 @@ class ProcessManager:
         Raises RuntimeError if already recording.
         stdout is suppressed; stderr goes to a timestamped log file.
         On Windows, CREATE_NO_WINDOW suppresses the console (equivalent to start /min).
+
+        Phase 6.2: checks minimum free disk space before launching.
         """
         if self.is_running(channel_id):
             raise RuntimeError(f"Channel '{channel_id}' is already recording.")
+
+        # Phase 6.2 — Disk space safety check
+        settings = get_settings()
+        min_free = settings.min_free_disk_bytes
+        if min_free > 0:
+            record_dir = Path(config.paths.record_dir)
+            check_dir = record_dir if record_dir.exists() else record_dir.parent
+            try:
+                free = shutil.disk_usage(str(check_dir)).free
+                if free < min_free:
+                    msg = (
+                        f"[{channel_id}] Insufficient disk space: "
+                        f"{free // (1024 * 1024)} MB free, "
+                        f"minimum required {min_free // (1024 * 1024)} MB. "
+                        "Recording NOT started."
+                    )
+                    logger.error(msg)
+                    self.mark_degraded(channel_id)
+                    raise RuntimeError(msg)
+            except OSError as exc:
+                logger.warning("[%s] Could not check disk space: %s", channel_id, exc)
 
         cmd = build_ffmpeg_command(config)
         log_path = self._new_log_path(channel_id)
