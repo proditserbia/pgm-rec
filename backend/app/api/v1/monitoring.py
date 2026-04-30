@@ -72,6 +72,8 @@ def _channel_health_response(ch: Channel, db: Session) -> ChannelHealthResponse:
                 event_type=e.event_type,
                 detected_at=e.detected_at,
                 details=e.details,
+                alert_type=e.alert_type,
+                severity=e.severity if e.severity is not None else 0,
             )
             for e in events
         ],
