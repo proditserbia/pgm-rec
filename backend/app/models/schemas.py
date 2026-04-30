@@ -108,6 +108,14 @@ class PreviewConfig(BaseModel):
     encoder: str = "libx264"
     segment_time: int = 2
     list_size: int = 5
+    # Phase 9 — capture input mode for preview.
+    # direct_capture: open the same hardware device as recording (default).
+    #   Works when the hardware supports concurrent access (e.g. some v4l2
+    #   drivers).  On single-input Blackmagic Decklink systems this WILL
+    #   FAIL because the recording process already owns the device.
+    # from_recording_output: not yet implemented; reserved for future tee/pipe.
+    # disabled: preview is explicitly disabled — start attempts return 409.
+    input_mode: str = "direct_capture"
 
 
 class ChannelConfig(BaseModel):
@@ -275,6 +283,38 @@ class ChannelDebugResponse(BaseModel):
     stall_seconds: Optional[float] = None  # seconds since last file size growth
 
 
+class ChannelDiagnosticsResponse(BaseModel):
+    """
+    Deep diagnostics for a channel — Phase 9.
+
+    Intended for admin troubleshooting of black video, device issues, etc.
+    All fields are best-effort; None indicates the value could not be determined.
+    """
+
+    channel_id: str
+    # Recording command (same as /command endpoint)
+    ffmpeg_command: str
+    ffmpeg_command_list: list[str]
+    # Capture input details from config
+    device_type: str
+    input_specifier: str
+    resolution: str
+    framerate: int
+    # Record directory
+    record_dir: str
+    # Latest segment on disk (in record_dir)
+    latest_segment_path: Optional[str] = None
+    latest_segment_size_bytes: Optional[int] = None
+    latest_segment_mtime: Optional[datetime] = None
+    # Last N lines of recording stderr
+    stderr_tail: list[str] = Field(default_factory=list)
+    # Hint for listing capture devices on Windows/dshow
+    dshow_device_hint: str = (
+        'ffmpeg -list_devices true -f dshow -i dummy  '
+        '(run on the recording machine)'
+    )
+
+
 # ─── Preview response models — Phase 2 ───────────────────────────────────────
 
 class PreviewHealth(str, Enum):
@@ -303,6 +343,12 @@ class HlsPreviewStatusResponse(BaseModel):
     started_at: Optional[datetime] = None
     playlist_url: Optional[str] = None
     health: PreviewHealth = PreviewHealth.UNKNOWN
+    # Phase 9 additions — playlist readiness and startup lifecycle
+    # startup_status: "stopped" | "starting" | "running" | "failed"
+    startup_status: str = "stopped"
+    playlist_ready: bool = False
+    stderr_tail: list[str] = Field(default_factory=list)
+    failed_reason: Optional[str] = None
 
 
 # ─── Manifest / Export Index models — Phase 2A ───────────────────────────────

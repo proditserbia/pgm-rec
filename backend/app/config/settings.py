@@ -138,6 +138,9 @@ class Settings(BaseSettings):
     # Phase 5 — HLS Browser Preview
     # Root directory for per-channel HLS output (index.m3u8 + .ts segments)
     preview_dir: Path = _BASE_DIR / "data" / "preview"
+    # Phase 9 — How long (seconds) to wait for index.m3u8 to appear after
+    # preview start before declaring the preview "failed".
+    preview_startup_timeout_seconds: int = 30
 
     # Phase 6 — Deployment
     # Network bind address.  Used by the startup scripts (start.sh, service files).

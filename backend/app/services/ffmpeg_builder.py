@@ -210,9 +210,30 @@ def build_hls_preview_command(config: ChannelConfig, output_dir: Path) -> list[s
 
     Safe for ``subprocess.Popen(cmd, shell=False)``.
     Never pass the result to a shell — it is not shell-escaped.
+
+    Phase 9 notes:
+    - input_mode == "disabled": raises ValueError — caller should have blocked
+      this earlier; this is a safety belt.
+    - input_mode == "from_recording_output": not yet implemented.
+    - input_mode == "direct_capture" (default): opens the same hardware device.
+      On systems with a single Blackmagic Decklink input this WILL fail if
+      recording is already running, because the Decklink SDK only allows one
+      owner per input.  Set preview.input_mode = "disabled" in channel JSON to
+      prevent the attempt entirely.
     """
     cap = config.capture
     preview = config.preview
+
+    input_mode = getattr(preview, "input_mode", "direct_capture")
+    if input_mode == "disabled":
+        raise ValueError(
+            "build_hls_preview_command called with input_mode='disabled'. "
+            "The caller should have rejected this request before reaching the builder."
+        )
+    if input_mode == "from_recording_output":
+        raise ValueError(
+            "input_mode='from_recording_output' is not yet implemented."
+        )
 
     playlist_path = str(output_dir / "index.m3u8")
     segment_pattern = str(output_dir / "seg%05d.ts")

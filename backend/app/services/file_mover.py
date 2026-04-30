@@ -101,13 +101,50 @@ def _move_completed_files(
             continue
 
         dest = chunks_dir / src.name
-        # If a file with the same name already exists in chunks_dir, skip to
-        # avoid overwriting. (Shouldn't happen with strftime naming but be safe.)
         if dest.exists():
-            logger.warning(
-                "[file_mover] Destination already exists, skipping: %s", dest
-            )
-            continue
+            # Phase 9 — idempotent handling of pre-existing destinations.
+            try:
+                src_size = src.stat().st_size
+                dest_size = dest.stat().st_size
+            except OSError:
+                continue
+
+            if src_size == dest_size:
+                # Source and destination are the same file (e.g. previous move
+                # succeeded but crashed before cleaning up the source).
+                # Remove the stale source and treat this as already moved.
+                try:
+                    src.unlink()
+                    logger.info(
+                        "[file_mover] Removed stale duplicate source %s "
+                        "(dest already exists with same size=%d).",
+                        src.name, dest_size,
+                    )
+                except OSError as exc:
+                    logger.warning(
+                        "[file_mover] Could not remove stale source %s: %s",
+                        src.name, exc,
+                    )
+                continue
+            else:
+                # Genuine conflict: dest exists but sizes differ.
+                # Rename the destination to a safe backup name, then proceed.
+                suffix = int(time.time())
+                backup = dest.with_stem(f"{dest.stem}_conflict_{suffix}")
+                try:
+                    dest.rename(backup)
+                    logger.warning(
+                        "[file_mover] Destination conflict for %s "
+                        "(src=%d bytes, dest=%d bytes) — "
+                        "renamed dest to %s, proceeding with move.",
+                        src.name, src_size, dest_size, backup.name,
+                    )
+                except OSError as exc:
+                    logger.error(
+                        "[file_mover] Cannot resolve destination conflict for %s: %s",
+                        src.name, exc,
+                    )
+                    continue
 
         try:
             shutil.move(str(src), str(dest))

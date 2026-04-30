@@ -1,5 +1,5 @@
 """
-Preview API — v1 (Phase 5: HLS).
+Preview API — v1 (Phase 5: HLS / Phase 9: readiness + logs).
 
 Endpoints (all nested under /api/v1/channels/{channel_id}):
 
@@ -8,6 +8,7 @@ Endpoints (all nested under /api/v1/channels/{channel_id}):
   GET  /preview/status         — process status + playlist URL  (any role)
   GET  /preview/playlist.m3u8  — serve HLS playlist             (any role)
   GET  /preview/{segment}      — serve HLS .ts segment          (any role)
+  GET  /preview/logs           — last N lines of preview stderr (admin only)
 
 HLS preview architecture (Phase 5)
 ────────────────────────────────────
@@ -30,6 +31,12 @@ Isolation
 - Stopping HLS preview never stops recording.
 - HlsPreviewManager is entirely separate from ProcessManager.
 
+Phase 9 additions
+────────────────────────────────────
+- /preview/status now includes playlist_ready, startup_status, stderr_tail.
+- /preview/logs endpoint for admin stderr inspection.
+- start returns 409 if preview.input_mode == "disabled".
+
 Legacy MJPEG stream endpoint (Phase 2 /preview/stream) is kept for
 backward compatibility but marked as deprecated.
 """
@@ -39,7 +46,7 @@ import re
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -84,6 +91,10 @@ def _hls_status_response(channel_id: str) -> HlsPreviewStatusResponse:
         started_at=status["started_at"],
         playlist_url=status["playlist_url"],
         health=status["health"],
+        playlist_ready=status["playlist_ready"],
+        startup_status=status["startup_status"],
+        stderr_tail=status["stderr_tail"],
+        failed_reason=status.get("failed_reason"),
     )
 
 
@@ -98,7 +109,11 @@ def start_preview(channel_id: str, db: DbDep, _: AdminDep):
     Start the HLS preview process for a channel.  Admin only.
 
     The preview is completely isolated from recording.
-    Returns the playlist URL once the process has been launched.
+    Returns startup status; poll /preview/status for playlist_ready.
+
+    Returns 409 if:
+    - Preview is already running.
+    - preview.input_mode == "disabled" in channel config.
     """
     ch = _get_channel_or_404(channel_id, db)
     pm = get_hls_preview_manager()
@@ -117,6 +132,10 @@ def start_preview(channel_id: str, db: DbDep, _: AdminDep):
         started_at=info.started_at,
         playlist_url=status["playlist_url"],
         health=info.health,
+        playlist_ready=status["playlist_ready"],
+        startup_status=status["startup_status"],
+        stderr_tail=status["stderr_tail"],
+        failed_reason=None,
     )
 
 
@@ -133,6 +152,7 @@ def stop_preview(channel_id: str, db: DbDep, _: AdminDep):
         channel_id=channel_id,
         running=False,
         health=PreviewHealth.UNKNOWN,
+        startup_status="stopped",
     )
 
 
@@ -144,6 +164,25 @@ def get_preview_status(channel_id: str, db: DbDep, _: AnyRoleDep):
     """HLS preview process status and playlist URL.  Any authenticated role."""
     _get_channel_or_404(channel_id, db)
     return _hls_status_response(channel_id)
+
+
+@router.get("/channels/{channel_id}/preview/logs")
+def get_preview_logs(
+    channel_id: str,
+    db: DbDep,
+    _: AdminDep,
+    lines: int = Query(default=100, ge=1, le=5000),
+):
+    """
+    Return the last N lines of the preview FFmpeg stderr log.  Admin only.
+
+    Works whether preview is running, stopped, or failed.
+    Returns a plain-text response (newline-delimited).
+    """
+    _get_channel_or_404(channel_id, db)
+    pm = get_hls_preview_manager()
+    tail = pm.get_log_tail(channel_id, lines=lines)
+    return {"channel_id": channel_id, "lines": tail}
 
 
 @router.get("/channels/{channel_id}/preview/playlist.m3u8")
