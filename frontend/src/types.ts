@@ -75,6 +75,9 @@ export interface CommandPreviewResponse {
 
 export interface WatchdogEventResponse {
   id: number; channel_id: string; event_type: string; detected_at: string; details: string | null
+  // Phase 7 — broadcast alert classification
+  alert_type: string | null
+  severity: number
 }
 
 export interface SegmentAnomalyResponse {
@@ -119,12 +122,19 @@ export interface ResolveRangeResponse {
   channel_id: string; date: string; in_time: string; out_time: string
   segments: SegmentSlice[]; first_segment_offset_seconds: number
   export_duration_seconds: number; has_gaps: boolean; gaps: GapEntry[]
+  // Phase 7 — effective range after applying pre/post roll (null when no wrap)
+  effective_in_time: string | null
+  effective_out_time: string | null
 }
 
 export type ExportJobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
 
 export interface ExportJobRequest {
   date: string; in_time: string; out_time: string; allow_gaps: boolean
+  // Phase 7
+  preroll_seconds?: number
+  postroll_seconds?: number
+  never_expires?: boolean
 }
 
 export interface ExportJobResponse {
@@ -133,6 +143,10 @@ export interface ExportJobResponse {
   output_path: string | null; log_path: string | null; error_message: string | null
   has_gaps: boolean; actual_duration_seconds: number | null
   created_at: string; started_at: string | null; completed_at: string | null
+  // Phase 7
+  preroll_seconds: number
+  postroll_seconds: number
+  never_expires: boolean
 }
 
 export type PreviewHealth = 'healthy' | 'down' | 'unknown'

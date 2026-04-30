@@ -78,6 +78,8 @@ class WatchdogEvent(Base):
     One row per watchdog detection event (process dead, stale output, auto-restart).
 
     event_type values: process_dead | no_new_files | segment_gap | auto_restarted | adopted
+    alert_type values: loss_of_recording | freeze | silence | black  (Phase 7, nullable)
+    severity: 0=info | 1=warning | 2=error  (Phase 7, nullable — defaults to 0)
     """
 
     __tablename__ = "watchdog_events"
@@ -89,6 +91,9 @@ class WatchdogEvent(Base):
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     detected_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
     details: Mapped[str | None] = mapped_column(Text, nullable=True)  # free-text / JSON snippet
+    # Phase 7 — broadcast alert classification
+    alert_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    severity: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
 
     channel: Mapped["Channel"] = relationship(back_populates="watchdog_events")
 
@@ -149,6 +154,10 @@ class SegmentRecord(Base):
     # YYYY-MM-DD string in the channel's local timezone (for manifest partitioning)
     manifest_date: Mapped[str] = mapped_column(String(10), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+    # Phase 7 — broadcast segment flags (schema preparation; detection not yet implemented)
+    never_expires: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    has_freeze: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    has_silence: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
     channel: Mapped["Channel"] = relationship(back_populates="segment_records")
 
@@ -209,6 +218,11 @@ class ExportJob(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Phase 7 — export pre/post roll wrap (seconds; 0 = no wrap)
+    preroll_seconds: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    postroll_seconds: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    # Phase 7 — preservation flag; if True, retention cleanup skips this job's output
+    never_expires: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class User(Base):

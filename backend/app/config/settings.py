@@ -151,6 +151,25 @@ class Settings(BaseSettings):
     # Default: 500 MB.  Set to 0 to disable the check.
     min_free_disk_bytes: int = 500 * 1024 * 1024  # 500 MB
 
+    # Phase 7 — Alert system (broadcast alert classification + debounce)
+    # Each alert type can be independently enabled/disabled and given a debounce
+    # delay (trigger_after_seconds).  A condition must persist for at least that
+    # many seconds before a WatchdogEvent is logged.  Set trigger_after_seconds=0
+    # to fire immediately.
+    #
+    # loss_of_recording: FFmpeg process died or no new segment files (severity=2)
+    alert_loss_of_recording_enabled: bool = True
+    alert_loss_of_recording_trigger_after_seconds: int = 0   # fire immediately
+    # freeze: video frame frozen / image unchanged (severity=2; detection TBD)
+    alert_freeze_enabled: bool = True
+    alert_freeze_trigger_after_seconds: int = 40
+    # silence: audio below threshold (severity=1; detection TBD)
+    alert_silence_enabled: bool = True
+    alert_silence_trigger_after_seconds: int = 10
+    # black: pure black frame / no video signal (severity=2; detection TBD)
+    alert_black_enabled: bool = True
+    alert_black_trigger_after_seconds: int = 10
+
 
 _settings: Settings | None = None
 

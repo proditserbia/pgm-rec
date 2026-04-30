@@ -372,6 +372,8 @@ async def run_export_job(job_id: int) -> None:
         date = job.date
         in_time = job.in_time
         out_time = job.out_time
+        preroll = getattr(job, "preroll_seconds", 0.0) or 0.0
+        postroll = getattr(job, "postroll_seconds", 0.0) or 0.0
 
     logger.info("[export][%d] Starting export %s %s %s → %s", job_id, channel_id, date, in_time, out_time)
 
@@ -385,7 +387,13 @@ async def run_export_job(job_id: int) -> None:
     try:
         # ── Resolve range ──────────────────────────────────────────────────
         with SessionLocal() as db:
-            request = ResolveRangeRequest(date=date, in_time=in_time, out_time=out_time)
+            request = ResolveRangeRequest(
+                date=date,
+                in_time=in_time,
+                out_time=out_time,
+                preroll_seconds=preroll,
+                postroll_seconds=postroll,
+            )
             resolve = resolve_export_range(channel_id, request, db)
 
         if not resolve.segments:
@@ -445,7 +453,11 @@ async def run_export_job(job_id: int) -> None:
             base_date = _dt.strptime(date, "%Y-%m-%d")
             in_h, in_m, in_s = map(int, in_time.split(":"))
             in_dt = base_date + timedelta(hours=in_h, minutes=in_m, seconds=in_s)
-            out_dt = in_dt + timedelta(seconds=resolve.export_duration_seconds)
+            # Effective out = effective_in + export_duration.
+            # effective_in = original_in - preroll, so:
+            # effective_out = (original_in - preroll) + export_duration_seconds
+            effective_in_dt = in_dt - timedelta(seconds=preroll)
+            out_dt = effective_in_dt + timedelta(seconds=resolve.export_duration_seconds)
             last_outpoint = (out_dt - last_seg_start_naive).total_seconds()
             write_concat_file_with_outpoint(
                 concat_file,

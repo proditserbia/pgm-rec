@@ -405,6 +405,9 @@ def register_segment(
         status=SegmentStatus.COMPLETE,
         created_at=now_utc,
         ffprobe_verified=ffprobe_verified,
+        never_expires=False,
+        has_freeze=None,
+        has_silence=None,
     )
     manifest.segments = [s for s in manifest.segments if s.filename != filename]
     manifest.segments.append(new_entry)
@@ -449,12 +452,16 @@ def resolve_export_range(
     in the **UTC** timezone (the DB stores times in UTC), this function:
 
     1. Builds UTC datetimes for in and out times on the given date.
-    2. Queries the DB for segments that overlap [in_time, out_time].
-    3. Computes:
+    2. Applies pre/post-roll wrap (Phase 7): expands the effective range by
+       ``preroll_seconds`` before in_time and ``postroll_seconds`` after out_time.
+    3. Queries the DB for segments that overlap [effective_in, effective_out].
+    4. Computes:
        - first_segment_offset_seconds: how far into the first segment the
-         in_time falls.
-       - export_duration_seconds: total wall-clock length of the export.
-    4. Detects gaps within the resolved range.
+         effective in_time falls.
+       - export_duration_seconds: total wall-clock length of the effective export
+         (includes preroll + original range + postroll).
+    5. Detects gaps within the effective resolved range.
+    6. Returns effective_in_time / effective_out_time when wrap > 0.
 
     Does NOT perform any actual video processing.
     """
@@ -475,16 +482,22 @@ def resolve_export_range(
     if out_dt <= in_dt:
         raise ValueError("out_time must be after in_time")
 
-    export_duration = (out_dt - in_dt).total_seconds()
+    # Phase 7 — apply pre/post roll wrap
+    preroll = max(0.0, request.preroll_seconds)
+    postroll = max(0.0, request.postroll_seconds)
+    effective_in_dt = in_dt - timedelta(seconds=preroll)
+    effective_out_dt = out_dt + timedelta(seconds=postroll)
 
-    # Query segments that overlap the requested range:
-    #   seg.end_time > in_dt  AND  seg.start_time < out_dt
+    export_duration = (effective_out_dt - effective_in_dt).total_seconds()
+
+    # Query segments that overlap the effective range:
+    #   seg.end_time > effective_in_dt  AND  seg.start_time < effective_out_dt
     db_segments = (
         db.query(SegmentRecord)
         .filter(
             SegmentRecord.channel_id == channel_id,
-            SegmentRecord.end_time > in_dt,
-            SegmentRecord.start_time < out_dt,
+            SegmentRecord.end_time > effective_in_dt,
+            SegmentRecord.start_time < effective_out_dt,
         )
         .order_by(SegmentRecord.start_time)
         .all()
@@ -501,12 +514,12 @@ def resolve_export_range(
         for seg in db_segments
     ]
 
-    # First segment offset: how many seconds into the first segment is in_dt?
+    # First segment offset: how many seconds into the first segment is effective_in_dt?
     first_offset = 0.0
     if slices:
-        first_offset = max(0.0, (in_dt - slices[0].start_time).total_seconds())
+        first_offset = max(0.0, (effective_in_dt - slices[0].start_time).total_seconds())
 
-    # Detect gaps within the resolved range
+    # Detect gaps within the effective resolved range
     gaps_in_range: list[GapEntry] = []
     for i in range(len(slices) - 1):
         gap_secs = (slices[i + 1].start_time - slices[i].end_time).total_seconds()
@@ -516,6 +529,21 @@ def resolve_export_range(
                 gap_end=slices[i + 1].start_time,
                 gap_seconds=gap_secs,
             ))
+
+    # Phase 7 — build effective time strings for the response (only when wrap > 0)
+    def _dt_to_hms(dt: datetime) -> str:
+        total_secs = int(dt.hour * 3600 + dt.minute * 60 + dt.second)
+        h = total_secs // 3600
+        m = (total_secs % 3600) // 60
+        s = total_secs % 60
+        return f"{h:02d}:{m:02d}:{s:02d}"
+
+    effective_in_time: Optional[str] = None
+    effective_out_time: Optional[str] = None
+    if preroll > 0:
+        effective_in_time = _dt_to_hms(effective_in_dt)
+    if postroll > 0:
+        effective_out_time = _dt_to_hms(effective_out_dt)
 
     return ResolveRangeResponse(
         channel_id=channel_id,
@@ -527,4 +555,6 @@ def resolve_export_range(
         export_duration_seconds=export_duration,
         has_gaps=bool(gaps_in_range),
         gaps=gaps_in_range,
+        effective_in_time=effective_in_time,
+        effective_out_time=effective_out_time,
     )

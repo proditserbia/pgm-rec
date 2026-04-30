@@ -72,6 +72,9 @@ def _job_to_response(job: ExportJob) -> ExportJobResponse:
         created_at=job.created_at,
         started_at=job.started_at,
         completed_at=job.completed_at,
+        preroll_seconds=job.preroll_seconds,
+        postroll_seconds=job.postroll_seconds,
+        never_expires=job.never_expires,
     )
 
 
@@ -155,6 +158,18 @@ def _validate_export_request(body: ExportJobRequest) -> None:
             ),
         )
 
+    # Phase 7 — validate pre/post roll
+    if body.preroll_seconds < 0:
+        raise HTTPException(
+            status_code=400,
+            detail="preroll_seconds must be non-negative.",
+        )
+    if body.postroll_seconds < 0:
+        raise HTTPException(
+            status_code=400,
+            detail="postroll_seconds must be non-negative.",
+        )
+
 
 # ─── POST /channels/{channel_id}/exports ──────────────────────────────────────
 
@@ -192,6 +207,8 @@ def create_export_job(
         date=body.date,
         in_time=body.in_time,
         out_time=body.out_time,
+        preroll_seconds=body.preroll_seconds,
+        postroll_seconds=body.postroll_seconds,
     )
     try:
         resolve = resolve_export_range(channel_id, request, db)
@@ -225,6 +242,9 @@ def create_export_job(
         status=ExportJobStatus.QUEUED,
         progress_percent=0.0,
         has_gaps=resolve.has_gaps,
+        preroll_seconds=body.preroll_seconds,
+        postroll_seconds=body.postroll_seconds,
+        never_expires=body.never_expires,
     )
     db.add(job)
     db.commit()
