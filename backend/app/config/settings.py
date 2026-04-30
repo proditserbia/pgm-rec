@@ -107,6 +107,16 @@ class Settings(BaseSettings):
     # Root directory for per-channel HLS output (index.m3u8 + .ts segments)
     preview_dir: Path = _BASE_DIR / "data" / "preview"
 
+    # Phase 6 — Deployment
+    # Comma-separated allowed CORS origins.  Use "*" for dev; list explicit origins in prod.
+    # Example: PGMREC_CORS_ORIGINS=https://rec.example.com,https://api.example.com
+    cors_origins: str = "*"
+    # Absolute path to ffmpeg binary.  Overrides per-channel ffmpeg_path if set.
+    # If empty, per-channel config is used (default).
+    ffmpeg_path_override: str = ""
+    # Absolute path to ffprobe binary.  Used by manifest/export services.
+    ffprobe_path: str = "ffprobe"
+
 
 _settings: Settings | None = None
 

@@ -15,3 +15,7 @@ frontend/.env
 backend/logs/
 backend/data/exports/
 backend/data/manifests/
+
+# Deployment
+.env
+scripts/windows/nssm.exe

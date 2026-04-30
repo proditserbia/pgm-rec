@@ -1,0 +1,57 @@
+# ─── PGMRec — docker-compose.yml ─────────────────────────────────────────────
+#
+# Brings up the PGMRec backend (and optionally an Nginx reverse proxy).
+#
+# Quick start:
+#   cp .env.example .env          # edit secrets
+#   docker compose up -d
+#
+# The backend serves both the API (/api/v1/) and the pre-built frontend (/)
+# from port 8000.  For a production reverse proxy add the nginx service below.
+
+services:
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pgmrec-backend:latest
+    container_name: pgmrec-backend
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist all data outside the container
+      - pgmrec-data:/app/data
+      - pgmrec-logs:/app/logs
+      # Mount channel configs from host for easy editing without rebuilding
+      # - ./backend/data/channels:/app/data/channels:ro
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ── Optional: Nginx reverse proxy ─────────────────────────────────────────
+  # Uncomment to expose on port 80/443 with TLS termination.
+  # Requires: nginx.conf (see docs/nginx.conf.example)
+  #
+  # nginx:
+  #   image: nginx:1.27-alpine
+  #   container_name: pgmrec-nginx
+  #   restart: unless-stopped
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./docs/nginx.conf.example:/etc/nginx/conf.d/pgmrec.conf:ro
+  #     - /etc/letsencrypt:/etc/letsencrypt:ro
+  #   depends_on:
+  #     - backend
+
+volumes:
+  pgmrec-data:
+  pgmrec-logs:

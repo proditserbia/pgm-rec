@@ -29,9 +29,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from .config.settings import get_settings
 from .db.models import Channel, User
@@ -228,9 +230,12 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Parse CORS origins from comma-separated string
+    _cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=_cors_origins,
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -251,6 +256,26 @@ def create_app() -> FastAPI:
             "app": settings.app_name,
             "version": settings.app_version,
         }
+
+    # ── Serve pre-built React frontend (Phase 6) ─────────────────────────
+    # If frontend/dist exists (production build), serve it as static files.
+    # The SPA catch-all serves index.html for all non-API routes so that
+    # client-side routing works when navigating directly to a URL.
+    _frontend_dist = Path(__file__).parent.parent.parent.parent / "frontend" / "dist"
+    if _frontend_dist.is_dir():
+        app.mount(
+            "/assets",
+            StaticFiles(directory=str(_frontend_dist / "assets")),
+            name="frontend-assets",
+        )
+
+        from fastapi.responses import FileResponse as _FileResponse
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        def _spa_fallback(full_path: str):
+            """Serve index.html for all non-API SPA routes."""
+            index = _frontend_dist / "index.html"
+            return _FileResponse(str(index))
 
     return app
 
