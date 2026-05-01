@@ -808,8 +808,10 @@ def test_process_manager_nvenc_fallback_not_triggered_for_libx264(tmp_path):
 
 def test_is_nvenc_failure_detects_nvenc_keyword(tmp_path):
     log = tmp_path / "test.log"
-    log.write_text("Error initializing output stream: Error while opening encoder\n"
-                   "NVENC Error: No NVENC capable devices found\n")
+    log.write_text(
+        "Error initializing output stream: Error while opening encoder\n"
+        "NVENC Error: No NVENC capable devices found\n"
+    )
     assert _is_nvenc_failure(log) is True
 
 
