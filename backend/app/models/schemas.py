@@ -97,9 +97,10 @@ class RecordingPreviewOutputConfig(BaseModel):
     - ``fail_safe_mode=True`` (default): logs a prominent WARNING when NVENC is
       requested so operators know the risk.  Does NOT suppress NVENC; set
       ``video_codec="libx264"`` if you want guaranteed-safe CPU encoding.
-    - ``fallback_to_cpu=True``: informational flag for future callers — signals
-      that if the process crashes the caller may retry with ``libx264``.
-      No automatic retry logic exists at the FFmpeg command level.
+    - ``fallback_to_cpu=True``: if FFmpeg exits immediately after start with an
+      NVENC-related error, ``ProcessManager.start()`` retries once using
+      ``video_codec="libx264"`` for the preview output.  Main recording
+      settings (``encoding.*``) are never modified by the fallback.
     """
 
     enabled: bool = False
@@ -128,7 +129,9 @@ class RecordingPreviewOutputConfig(BaseModel):
     # When True (default): emit a WARNING log if NVENC is configured, reminding
     # the operator that a codec failure inside recording will stop recording.
     fail_safe_mode: bool = True
-    # Informational hint: if True, callers may retry with libx264 after failure.
+    # When True: if FFmpeg exits immediately after start with an NVENC-related
+    # error, ProcessManager.start() will retry once using video_codec='libx264'
+    # for the preview output.  Main recording settings are never changed.
     fallback_to_cpu: bool = False
 
 

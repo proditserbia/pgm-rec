@@ -239,6 +239,33 @@ class _RestartHistory:
         self._cooldown_until = None
 
 
+# ─── NVENC fallback helpers ───────────────────────────────────────────────────
+
+# How long to wait (seconds) after launching FFmpeg to detect an immediate
+# NVENC initialisation failure.  Typical NVENC failures occur within <1 s;
+# 3 s is a safe margin that still keeps the start() call reasonably fast.
+_NVENC_CRASH_WAIT: float = 3.0
+
+# Keywords that, when present in the FFmpeg stderr log, indicate an NVENC
+# driver/device failure rather than a recording or I/O error.
+_NVENC_ERROR_KEYWORDS: tuple[str, ...] = ("nvenc", "nvcuda")
+
+
+def _is_nvenc_failure(log_path: Path) -> bool:
+    """
+    Return True if *log_path* contains NVENC-related error keywords.
+
+    Used by the NVENC fallback logic in ProcessManager.start() to distinguish
+    an NVENC initialisation crash from other immediate FFmpeg exits.
+    """
+    tail = _tail_file(log_path, 50)
+    for line in tail:
+        lower = line.lower()
+        if any(kw in lower for kw in _NVENC_ERROR_KEYWORDS):
+            return True
+    return False
+
+
 # ─── Process manager ──────────────────────────────────────────────────────────
 
 class ProcessManager:
@@ -595,6 +622,117 @@ class ProcessManager:
         db.commit()
 
         logger.info("[%s] FFmpeg started — PID %d, log: %s", channel_id, process.pid, log_path)
+
+        # ── Phase 12 — NVENC fallback ─────────────────────────────────────────
+        # If the preview output is configured to use an NVENC encoder and
+        # fallback_to_cpu=True, wait briefly to detect an immediate crash caused
+        # by NVENC being unavailable.  On failure, retry once with libx264.
+        # This is the ONLY place a retry occurs; we never loop.
+        rpo = config.recording_preview_output
+        if (
+            rpo is not None
+            and rpo.enabled
+            and rpo.fallback_to_cpu
+            and rpo.video_codec != "libx264"
+        ):
+            time.sleep(_NVENC_CRASH_WAIT)
+            exit_code = process.poll()
+            if exit_code is not None:  # exited before the wait expired
+                if _is_nvenc_failure(log_path):
+                    logger.warning(
+                        "[%s] NVENC preview failed, retrying recording with "
+                        "CPU preview encoder.",
+                        channel_id,
+                    )
+                    # Mark the failed first attempt as stopped in the DB.
+                    failed_record = (
+                        db.query(ProcessRecord)
+                        .filter(
+                            ProcessRecord.channel_id == channel_id,
+                            ProcessRecord.pid == process.pid,
+                            ProcessRecord.status == ProcessStatus.RUNNING.value,
+                        )
+                        .order_by(ProcessRecord.id.desc())
+                        .first()
+                    )
+                    if failed_record:
+                        failed_record.status = ProcessStatus.STOPPED.value
+                        failed_record.stopped_at = utc_now()
+                        failed_record.exit_code = exit_code
+                        db.commit()
+
+                    # Remove the failed entry from in-memory state.
+                    del self._procs[channel_id]
+
+                    # Build a new config with libx264 for the preview output.
+                    # Main recording settings (config.encoding.*) are unchanged.
+                    cpu_rpo = rpo.model_copy(
+                        update={"video_codec": "libx264", "tune": None, "preset": "veryfast"}
+                    )
+                    cpu_config = config.model_copy(
+                        update={"recording_preview_output": cpu_rpo}
+                    )
+
+                    cmd = build_ffmpeg_command(cpu_config)
+                    log_path = self._new_log_path(channel_id)
+
+                    now_iso = utc_now().isoformat()
+                    with open(log_path, "w", encoding="utf-8") as lf:
+                        lf.write(
+                            f"[{now_iso}] NVENC FALLBACK: retrying with libx264 "
+                            "preview encoder\n"
+                        )
+                        lf.write(f"[{now_iso}] COMMAND: {format_command_for_log(cmd)}\n")
+                        lf.write(f"[{now_iso}] STARTING\n")
+
+                    logger.info(
+                        "[%s] Starting FFmpeg (CPU fallback): %s",
+                        channel_id,
+                        format_command_for_log(cmd),
+                    )
+
+                    log_fh = open(log_path, "ab")
+                    try:
+                        extra: dict = {}
+                        if sys.platform == "win32":
+                            extra["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+                        process = subprocess.Popen(
+                            cmd,
+                            stdout=subprocess.DEVNULL,
+                            stderr=log_fh,
+                            **extra,
+                        )
+                    finally:
+                        log_fh.close()
+
+                    started_at = utc_now()
+                    info = ProcessInfo(
+                        channel_id=channel_id,
+                        pid=process.pid,
+                        process=process,
+                        log_path=log_path,
+                        started_at=started_at,
+                    )
+                    self._procs[channel_id] = info
+
+                    record = ProcessRecord(
+                        channel_id=channel_id,
+                        pid=process.pid,
+                        status=ProcessStatus.RUNNING.value,
+                        started_at=started_at,
+                        log_path=str(log_path),
+                    )
+                    db.add(record)
+                    db.commit()
+
+                    logger.info(
+                        "[%s] FFmpeg (CPU fallback) started — PID %d, log: %s",
+                        channel_id,
+                        process.pid,
+                        log_path,
+                    )
+
         return info
 
     def stop(

@@ -535,6 +535,27 @@ def build_hls_preview_from_file_command(
     return cmd
 
 
+
+# ─── Codec compatibility sets for browser HLS ─────────────────────────────────
+
+# H.264-producing video codecs recognised by browser HLS (all produce AVC/H.264)
+_HLS_H264_VIDEO_CODECS = frozenset({
+    "libx264",
+    "h264_nvenc",
+    "h264_amf",
+    "h264_qsv",
+    "h264_v4l2m2m",
+    "h264_videotoolbox",
+})
+
+# AAC-producing audio codecs compatible with browser HLS
+_HLS_AAC_AUDIO_CODECS = frozenset({
+    "aac",
+    "aac_latm",
+    "libfdk_aac",
+})
+
+
 def build_hls_preview_from_udp_command(
     config: ChannelConfig,
     output_dir: Path,
@@ -561,6 +582,10 @@ def build_hls_preview_from_udp_command(
 
     Raises:
       ValueError  if ``recording_preview_output`` is not configured on the channel.
+      ValueError  if the configured video codec is not H.264-compatible (browser
+                  HLS requires H.264 video for cross-browser playback).
+      ValueError  if audio is enabled and the configured audio codec is not AAC
+                  (browser HLS requires AAC audio for cross-browser playback).
 
     Safe for ``subprocess.Popen(cmd, shell=False)``.
     Never pass the result to a shell — it is not shell-escaped.
@@ -571,6 +596,29 @@ def build_hls_preview_from_udp_command(
             f"build_hls_preview_from_udp_command: channel '{config.id}' has "
             "no recording_preview_output configured.  Set "
             "recording_preview_output.enabled=True and provide a UDP URL."
+        )
+
+    # ── Browser HLS codec compatibility check ─────────────────────────────────
+    # HLS served to browsers must use H.264 video; all other codecs (e.g. mpeg4,
+    # hevc, vp9) are either unsupported or require MSE extensions not universally
+    # available.  Reject non-H.264 early with a clear message rather than
+    # producing a stream that silently fails to play.
+    if rpo.video_codec not in _HLS_H264_VIDEO_CODECS:
+        raise ValueError(
+            f"build_hls_preview_from_udp_command: channel '{config.id}' uses "
+            f"video_codec='{rpo.video_codec}' which is not H.264-compatible. "
+            "Browser HLS requires H.264 video (e.g. libx264 or h264_nvenc). "
+            "Set recording_preview_output.video_codec to a supported H.264 encoder."
+        )
+
+    # Audio codec must be AAC when audio is enabled (MP3, Opus, etc. are not
+    # reliably supported in HLS by all browsers).
+    if rpo.audio_enabled and rpo.audio_codec not in _HLS_AAC_AUDIO_CODECS:
+        raise ValueError(
+            f"build_hls_preview_from_udp_command: channel '{config.id}' uses "
+            f"audio_codec='{rpo.audio_codec}' which is not AAC-compatible. "
+            "Browser HLS requires AAC audio. "
+            "Set recording_preview_output.audio_codec to 'aac'."
         )
 
     preview = config.preview

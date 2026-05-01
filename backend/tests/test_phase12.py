@@ -51,6 +51,7 @@ from app.services.ffmpeg_builder import (
     build_hls_preview_from_udp_command,
 )
 from app.services.hls_preview_manager import HlsPreviewManager
+from app.services.process_manager import ProcessManager, _is_nvenc_failure
 
 
 # ---------------------------------------------------------------------------
@@ -608,3 +609,222 @@ def test_rts1_round_trip_with_recording_preview_output():
     assert cfg2.recording_preview_output is not None
     assert cfg2.recording_preview_output.video_codec == cfg.recording_preview_output.video_codec
     assert cfg2.preview.input_mode == "from_udp"
+
+
+# ---------------------------------------------------------------------------
+# build_hls_preview_from_udp_command — codec validation (Phase 12 sanity)
+# ---------------------------------------------------------------------------
+
+def test_build_hls_preview_from_udp_raises_for_non_h264_video_codec(tmp_path):
+    """Non-H.264 video codec (e.g. mpeg4) must raise ValueError with clear message."""
+    cfg = _base_config(rpo_kwargs={"enabled": True, "video_codec": "mpeg4"})
+    with pytest.raises(ValueError, match="H.264"):
+        build_hls_preview_from_udp_command(cfg, tmp_path)
+
+
+def test_build_hls_preview_from_udp_raises_for_hevc_video_codec(tmp_path):
+    """HEVC/libx265 codec must also raise ValueError (not H.264)."""
+    cfg = _base_config(rpo_kwargs={"enabled": True, "video_codec": "libx265"})
+    with pytest.raises(ValueError, match="H.264"):
+        build_hls_preview_from_udp_command(cfg, tmp_path)
+
+
+def test_build_hls_preview_from_udp_raises_for_non_aac_audio(tmp_path):
+    """Non-AAC audio codec (e.g. mp3) must raise ValueError when audio enabled."""
+    cfg = _base_config(
+        rpo_kwargs={
+            "enabled": True,
+            "video_codec": "libx264",
+            "audio_enabled": True,
+            "audio_codec": "libmp3lame",
+        }
+    )
+    with pytest.raises(ValueError, match="AAC"):
+        build_hls_preview_from_udp_command(cfg, tmp_path)
+
+
+def test_build_hls_preview_from_udp_no_audio_codec_check_when_disabled(tmp_path):
+    """Non-AAC audio codec must NOT raise when audio_enabled=False."""
+    cfg = _base_config(
+        rpo_kwargs={
+            "enabled": True,
+            "video_codec": "libx264",
+            "audio_enabled": False,
+            "audio_codec": "libmp3lame",
+        }
+    )
+    # Should not raise
+    cmd = build_hls_preview_from_udp_command(cfg, tmp_path)
+    assert "-an" in cmd
+
+
+def test_build_hls_preview_from_udp_nvenc_codec_accepted(tmp_path):
+    """h264_nvenc is H.264-compatible and must not raise ValueError."""
+    cfg = _base_config(
+        rpo_kwargs={"enabled": True, "video_codec": "h264_nvenc", "audio_enabled": False}
+    )
+    cmd = build_hls_preview_from_udp_command(cfg, tmp_path)
+    assert cmd[0] == cfg.ffmpeg_path
+
+
+# ---------------------------------------------------------------------------
+# ProcessManager — NVENC fallback (Phase 12 sanity)
+# ---------------------------------------------------------------------------
+
+
+def _make_db_mock():
+    """Return a minimal SQLAlchemy session mock that accepts add/commit/query."""
+    db = MagicMock()
+    # query(...).filter(...).order_by(...).first() chain → None (no existing record)
+    db.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+    return db
+
+
+def test_process_manager_nvenc_fallback_retries_with_libx264(tmp_path):
+    """
+    When fallback_to_cpu=True and FFmpeg exits immediately with NVENC keywords
+    in stderr, start() must retry once with video_codec='libx264'.
+    """
+    cfg = _base_config(
+        rpo_kwargs={
+            "enabled": True,
+            "video_codec": "h264_nvenc",
+            "fallback_to_cpu": True,
+        }
+    )
+
+    # First process exits immediately; second stays alive.
+    nvenc_proc = _mock_process(returncode=1)
+    cpu_proc = _mock_process(returncode=None)
+
+    db = _make_db_mock()
+    pm = ProcessManager()
+
+    with (
+        patch("app.services.process_manager.subprocess.Popen", side_effect=[nvenc_proc, cpu_proc]),
+        patch("app.services.process_manager._is_nvenc_failure", return_value=True),
+        patch("app.services.process_manager.time.sleep"),
+        patch("app.services.process_manager.get_settings") as mock_settings,
+        patch("app.services.process_manager.resolve_channel_path", return_value=tmp_path),
+        patch("app.services.process_manager.shutil.disk_usage") as mock_du,
+    ):
+        ms = MagicMock()
+        ms.logs_dir = tmp_path / "logs"
+        ms.logs_dir.mkdir(parents=True, exist_ok=True)
+        ms.min_free_disk_bytes = 0
+        ms.log_max_files_per_channel = 10
+        ms.restart_pre_delay_seconds = 0
+        mock_settings.return_value = ms
+        mock_du.return_value = MagicMock(free=10 * 1024 * 1024 * 1024)
+
+        info = pm.start("rts1", cfg, db)
+
+    # The returned info must belong to the CPU-fallback process.
+    assert info.pid == cpu_proc.pid
+    assert pm.is_running("rts1")
+
+
+def test_process_manager_nvenc_no_fallback_when_not_configured(tmp_path):
+    """
+    When fallback_to_cpu=False, start() must NOT retry even if FFmpeg exits
+    immediately — it simply returns the ProcessInfo as normal.
+    """
+    cfg = _base_config(
+        rpo_kwargs={
+            "enabled": True,
+            "video_codec": "h264_nvenc",
+            "fallback_to_cpu": False,
+        }
+    )
+
+    # Process stays alive (no crash).
+    proc = _mock_process(returncode=None)
+
+    db = _make_db_mock()
+    pm = ProcessManager()
+
+    with (
+        patch("app.services.process_manager.subprocess.Popen", return_value=proc),
+        patch("app.services.process_manager.time.sleep"),
+        patch("app.services.process_manager.get_settings") as mock_settings,
+        patch("app.services.process_manager.resolve_channel_path", return_value=tmp_path),
+        patch("app.services.process_manager.shutil.disk_usage") as mock_du,
+    ):
+        ms = MagicMock()
+        ms.logs_dir = tmp_path / "logs"
+        ms.logs_dir.mkdir(parents=True, exist_ok=True)
+        ms.min_free_disk_bytes = 0
+        ms.log_max_files_per_channel = 10
+        mock_settings.return_value = ms
+        mock_du.return_value = MagicMock(free=10 * 1024 * 1024 * 1024)
+
+        info = pm.start("rts1", cfg, db)
+
+    assert info.pid == proc.pid
+
+
+def test_process_manager_nvenc_fallback_not_triggered_for_libx264(tmp_path):
+    """
+    When video_codec is already 'libx264', the fallback block must not execute
+    (no extra sleep or retry).
+    """
+    cfg = _base_config(
+        rpo_kwargs={
+            "enabled": True,
+            "video_codec": "libx264",
+            "fallback_to_cpu": True,  # True but codec already CPU
+        }
+    )
+
+    proc = _mock_process(returncode=None)
+    db = _make_db_mock()
+    pm = ProcessManager()
+
+    with (
+        patch("app.services.process_manager.subprocess.Popen", return_value=proc),
+        patch("app.services.process_manager.time.sleep") as mock_sleep,
+        patch("app.services.process_manager.get_settings") as mock_settings,
+        patch("app.services.process_manager.resolve_channel_path", return_value=tmp_path),
+        patch("app.services.process_manager.shutil.disk_usage") as mock_du,
+    ):
+        ms = MagicMock()
+        ms.logs_dir = tmp_path / "logs"
+        ms.logs_dir.mkdir(parents=True, exist_ok=True)
+        ms.min_free_disk_bytes = 0
+        ms.log_max_files_per_channel = 10
+        mock_settings.return_value = ms
+        mock_du.return_value = MagicMock(free=10 * 1024 * 1024 * 1024)
+
+        info = pm.start("rts1", cfg, db)
+
+    # _NVENC_CRASH_WAIT sleep must NOT have been called.
+    mock_sleep.assert_not_called()
+    assert info.pid == proc.pid
+
+
+# ---------------------------------------------------------------------------
+# _is_nvenc_failure helper
+# ---------------------------------------------------------------------------
+
+def test_is_nvenc_failure_detects_nvenc_keyword(tmp_path):
+    log = tmp_path / "test.log"
+    log.write_text("Error initializing output stream: Error while opening encoder\n"
+                   "NVENC Error: No NVENC capable devices found\n")
+    assert _is_nvenc_failure(log) is True
+
+
+def test_is_nvenc_failure_detects_nvcuda_keyword(tmp_path):
+    log = tmp_path / "test.log"
+    log.write_text("Cannot load nvcuda.dll\n")
+    assert _is_nvenc_failure(log) is True
+
+
+def test_is_nvenc_failure_returns_false_for_unrelated_error(tmp_path):
+    log = tmp_path / "test.log"
+    log.write_text("Invalid data found when processing input\n")
+    assert _is_nvenc_failure(log) is False
+
+
+def test_is_nvenc_failure_returns_false_for_missing_file(tmp_path):
+    log = tmp_path / "nonexistent.log"
+    assert _is_nvenc_failure(log) is False
