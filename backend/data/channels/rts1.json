@@ -52,11 +52,30 @@
     "enabled": true,
     "days": 30
   },
+  "recording_preview_output": {
+    "enabled": true,
+    "url": "udp://127.0.0.1:23001?pkt_size=1316",
+    "format": "mpegts",
+    "video_codec": "h264_nvenc",
+    "preset": "p1",
+    "tune": "ull",
+    "width": 480,
+    "height": 270,
+    "fps": 10,
+    "bitrate": "400k",
+    "audio_enabled": true,
+    "audio_codec": "aac",
+    "audio_bitrate": "96k",
+    "audio_sample_rate": 48000,
+    "fail_safe_mode": true,
+    "fallback_to_cpu": true
+  },
   "preview": {
     "enabled": false,
     "port": 23001,
     "scale": "320:180",
     "fps": 5,
-    "input_mode": "from_recording_output"
+    "input_mode": "from_udp",
+    "fallback_to_cpu": true
   }
 }

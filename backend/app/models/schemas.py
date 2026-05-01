@@ -80,6 +80,58 @@ class CaptureConfig(BaseModel):
     vcodec: Optional[str] = None         # e.g. "rawvideo" (rarely needed)
 
 
+class RecordingPreviewOutputConfig(BaseModel):
+    """
+    Configuration for a secondary low-res preview output embedded inside
+    the recording FFmpeg process — Phase 12.
+
+    When enabled, ``build_ffmpeg_command()`` uses ``-filter_complex`` to split
+    the video pipeline and mux a low-resolution preview stream to a UDP
+    destination alongside the normal segment recording.
+
+    ⚠️  SAFETY: This output runs inside the **same** FFmpeg process as recording.
+    A bad codec configuration (e.g. ``h264_nvenc`` unavailable) will crash the
+    recording process.
+
+    Guidance:
+    - ``fail_safe_mode=True`` (default): logs a prominent WARNING when NVENC is
+      requested so operators know the risk.  Does NOT suppress NVENC; set
+      ``video_codec="libx264"`` if you want guaranteed-safe CPU encoding.
+    - ``fallback_to_cpu=True``: informational flag for future callers — signals
+      that if the process crashes the caller may retry with ``libx264``.
+      No automatic retry logic exists at the FFmpeg command level.
+    """
+
+    enabled: bool = False
+    url: str = "udp://127.0.0.1:23001?pkt_size=1316"
+    format: str = "mpegts"
+
+    # ── Video ──────────────────────────────────────────────────────────────────
+    # Use "h264_nvenc" to request NVENC encoding (see safety note above).
+    video_codec: str = "libx264"
+    # Preset — libx264: e.g. "veryfast"; NVENC: e.g. "p1" (low-latency fast)
+    preset: Optional[str] = "veryfast"
+    # Tune — NVENC only: e.g. "ull" (ultra-low latency); ignored for libx264
+    tune: Optional[str] = None
+    width: int = 480
+    height: int = 270
+    fps: int = 10
+    bitrate: str = "400k"
+
+    # ── Audio ──────────────────────────────────────────────────────────────────
+    audio_enabled: bool = False
+    audio_codec: str = "aac"
+    audio_bitrate: str = "96k"
+    audio_sample_rate: int = 48000
+
+    # ── Safety ─────────────────────────────────────────────────────────────────
+    # When True (default): emit a WARNING log if NVENC is configured, reminding
+    # the operator that a codec failure inside recording will stop recording.
+    fail_safe_mode: bool = True
+    # Informational hint: if True, callers may retry with libx264 after failure.
+    fallback_to_cpu: bool = False
+
+
 class EncodingConfig(BaseModel):
     """Video and audio encoding parameters."""
 
@@ -136,8 +188,8 @@ class PreviewConfig(BaseModel):
     encoder: str = "libx264"
     segment_time: int = 2
     list_size: int = 5
-    # Phase 9/10 — capture input mode for preview.
-    # direct_capture: open the same hardware device as recording (default).
+    # Phase 9/10/12 — capture input mode for preview.
+    # direct_capture       : open the same hardware device as recording (default).
     #   Works when the hardware supports concurrent access (e.g. some v4l2
     #   drivers).  On single-input Blackmagic Decklink systems this WILL
     #   FAIL because the recording process already owns the device.
@@ -145,8 +197,16 @@ class PreviewConfig(BaseModel):
     #   chunks_dir instead of opening the device.  The preview is ~one segment
     #   behind live (default segment_time = 5 min) but never contends for the
     #   device.  This is the recommended mode for single-Decklink setups.
-    # disabled: preview is explicitly disabled — start attempts return 409.
+    # from_udp             : read from the UDP preview stream produced by the
+    #   recording FFmpeg process (via recording_preview_output).  Near-live
+    #   monitoring with audio; requires recording to be running with
+    #   recording_preview_output.enabled=True.
+    # disabled             : preview is explicitly disabled — start attempts
+    #   return 409.
     input_mode: str = "direct_capture"
+    # Phase 12 — informational hint: if from_udp mode fails, callers may fall
+    # back to from_recording_output automatically.
+    fallback_to_cpu: bool = False
 
 
 class ChannelConfig(BaseModel):
@@ -173,6 +233,10 @@ class ChannelConfig(BaseModel):
     paths: PathConfig
     retention: RetentionConfig = Field(default_factory=RetentionConfig)
     preview: PreviewConfig = Field(default_factory=PreviewConfig)
+    # Phase 12 — optional in-process UDP preview output embedded in recording.
+    # When set and enabled=True, build_ffmpeg_command() adds a second low-res
+    # output alongside the main recording using -filter_complex.
+    recording_preview_output: Optional[RecordingPreviewOutputConfig] = None
 
 
 # ─── Process / health status ──────────────────────────────────────────────────

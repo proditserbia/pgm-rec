@@ -49,7 +49,7 @@ import asyncio
 import logging
 import re
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -64,6 +64,7 @@ from ..models.schemas import (
     ResolveRangeResponse,
     SegmentSlice,
 )
+from ..utils import utc_now
 from .manifest_service import resolve_export_range
 
 logger = logging.getLogger(__name__)
@@ -381,7 +382,7 @@ async def run_export_job(job_id: int) -> None:
     with SessionLocal() as db:
         _update_job(db, job_id,
                     status=ExportJobStatus.RUNNING,
-                    started_at=datetime.now(timezone.utc),
+                    started_at=utc_now(),
                     progress_percent=0.0)
 
     try:
@@ -517,7 +518,7 @@ async def run_export_job(job_id: int) -> None:
                         status=ExportJobStatus.COMPLETED,
                         progress_percent=100.0,
                         actual_duration_seconds=actual_duration,
-                        completed_at=datetime.now(timezone.utc))
+                        completed_at=utc_now())
 
         logger.info("[export][%d] Completed → %s (actual_duration=%.1fs)",
                     job_id, output_path, actual_duration or 0.0)
@@ -533,7 +534,7 @@ async def run_export_job(job_id: int) -> None:
         with SessionLocal() as db:
             _update_job(db, job_id,
                         status=ExportJobStatus.CANCELLED,
-                        completed_at=datetime.now(timezone.utc))
+                        completed_at=utc_now())
         logger.info("[export][%d] Cancelled.", job_id)
         raise
 
@@ -550,7 +551,7 @@ async def run_export_job(job_id: int) -> None:
             _update_job(db, job_id,
                         status=ExportJobStatus.FAILED,
                         error_message=errmsg,
-                        completed_at=datetime.now(timezone.utc))
+                        completed_at=utc_now())
 
     finally:
         # Clean up temp concat file

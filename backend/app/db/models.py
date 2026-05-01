@@ -1,15 +1,13 @@
 """SQLAlchemy ORM models for PGMRec."""
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from ..utils import utc_now as _utcnow  # noqa: F401 — re-exported for column defaults
+
 # Phase 4 — valid role values
 ROLES = ("admin", "export", "preview")
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 class Base(DeclarativeBase):

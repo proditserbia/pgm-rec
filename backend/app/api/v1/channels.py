@@ -14,7 +14,7 @@ Endpoints:
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -38,6 +38,7 @@ from ...models.schemas import (
 )
 from ...services.ffmpeg_builder import build_ffmpeg_command, format_command_for_log
 from ...services.process_manager import get_process_manager, _tail_file
+from ...utils import utc_now
 from .deps import AdminDep, AnyRoleDep
 
 router = APIRouter(prefix="/channels", tags=["channels"])
@@ -62,7 +63,7 @@ def _status_response(ch: Channel) -> ChannelStatusResponse:
     log_path = pm.get_log_path(ch.id)
     uptime: float | None = None
     if started_at and proc_status == ProcessStatus.RUNNING:
-        uptime = (datetime.now(timezone.utc) - started_at).total_seconds()
+        uptime = (utc_now() - started_at).total_seconds()
     return ChannelStatusResponse(
         channel_id=ch.id,
         channel_name=ch.name,
@@ -277,7 +278,7 @@ def get_channel_diagnostics(channel_id: str, db: DbDep, _: AdminDep):
             st = f.stat()
             latest_path = str(f)
             latest_size = st.st_size
-            latest_mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)
+            latest_mtime = datetime.utcfromtimestamp(st.st_mtime)
     except OSError:
         pass
 

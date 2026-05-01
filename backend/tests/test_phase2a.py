@@ -16,7 +16,7 @@ Covers:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Generator
 from unittest.mock import MagicMock, patch
@@ -136,7 +136,7 @@ def test_settings_phase2a_defaults():
 
 def test_segment_record_model(db_session):
     _seed_channel(db_session)
-    now = datetime.now(timezone.utc)
+    now = datetime.utcnow()
     rec = SegmentRecord(
         channel_id="rts1",
         filename="010426-000000.mp4",
@@ -160,7 +160,7 @@ def test_segment_record_model(db_session):
 
 def test_manifest_gap_model(db_session):
     _seed_channel(db_session)
-    now = datetime.now(timezone.utc)
+    now = datetime.utcnow()
     gap = ManifestGap(
         channel_id="rts1",
         manifest_date="2026-04-01",
@@ -178,7 +178,7 @@ def test_manifest_gap_model(db_session):
 def test_segment_record_unique_constraint(db_session):
     from sqlalchemy.exc import IntegrityError
     _seed_channel(db_session)
-    now = datetime.now(timezone.utc)
+    now = datetime.utcnow()
     def _mk():
         return SegmentRecord(
             channel_id="rts1",
@@ -204,10 +204,10 @@ def test_segment_record_unique_constraint(db_session):
 # ---------------------------------------------------------------------------
 
 def test_parse_segment_start_time_valid():
-    # April 1, 2026 14:05:30 Belgrade (UTC+2 summer) → 12:05:30 UTC
+    # April 1, 2026 14:05:30 Belgrade (UTC+2 summer) → 12:05:30 UTC (naive)
     result = parse_segment_start_time("010426-140530.mp4", "%d%m%y-%H%M%S", "Europe/Belgrade")
     assert result is not None
-    assert result.tzinfo is not None
+    assert result.tzinfo is None  # naive UTC
     assert result.hour == 12
     assert result.minute == 5
     assert result.second == 30
@@ -216,7 +216,7 @@ def test_parse_segment_start_time_valid():
 def test_parse_segment_start_time_midnight():
     result = parse_segment_start_time("010426-000000.mp4", "%d%m%y-%H%M%S", "Europe/Belgrade")
     assert result is not None
-    assert result.tzinfo == timezone.utc
+    assert result.tzinfo is None  # naive UTC
     # midnight Belgrade (UTC+2) = 22:00 UTC on March 31
     assert result.day == 31
     assert result.month == 3
@@ -231,7 +231,7 @@ def test_parse_segment_start_time_invalid_filename():
 def test_parse_segment_start_time_utc_fallback():
     result = parse_segment_start_time("010426-120000.mp4", "%d%m%y-%H%M%S", "Invalid/Timezone")
     assert result is not None
-    assert result.tzinfo == timezone.utc
+    assert result.tzinfo is None  # naive UTC (fallback keeps input as-is)
     assert result.hour == 12
 
 
@@ -327,7 +327,7 @@ def test_ffprobe_duration_timeout(tmp_path):
 # ---------------------------------------------------------------------------
 
 def _make_segment_entry(filename: str, start: datetime, duration: float = 300.0) -> SegmentEntry:
-    now = datetime.now(timezone.utc)
+    now = datetime.utcnow()
     return SegmentEntry(
         filename=filename,
         path=f"/tmp/{filename}",
@@ -342,7 +342,7 @@ def _make_segment_entry(filename: str, start: datetime, duration: float = 300.0)
 
 
 def _make_manifest(channel_id: str = "rts1", date_str: str = "2026-04-01") -> DailyManifest:
-    now = datetime.now(timezone.utc)
+    now = datetime.utcnow()
     seg1 = _make_segment_entry("010426-000000.mp4", _utcdt(2026, 3, 31, 22, 0, 0))
     seg2 = _make_segment_entry("010426-000500.mp4", _utcdt(2026, 3, 31, 22, 5, 0))
     return DailyManifest(
@@ -666,7 +666,7 @@ def test_segment_status_values():
 
 
 def test_daily_manifest_schema():
-    now = datetime.now(timezone.utc)
+    now = datetime.utcnow()
     seg = _make_segment_entry("a.mp4", _utcdt(2026, 4, 1, 14, 0, 0))
     m = DailyManifest(
         channel_id="rts1",

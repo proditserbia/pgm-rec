@@ -30,7 +30,7 @@ import sys
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -39,6 +39,7 @@ from sqlalchemy.orm import Session
 from ..config.settings import get_settings, resolve_channel_path
 from ..db.models import ProcessRecord, RestartHistoryRecord
 from ..models.schemas import ChannelConfig, HealthStatus, ProcessStatus
+from ..utils import utc_now
 from .ffmpeg_builder import build_ffmpeg_command, format_command_for_log
 
 logger = logging.getLogger(__name__)
@@ -136,7 +137,7 @@ class ProcessInfo:
     _stall_last_size_change_at: Optional[datetime] = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
-        self.last_seen_alive = datetime.now(timezone.utc)
+        self.last_seen_alive = utc_now()
 
     def is_alive(self) -> bool:
         if self.process is not None:
@@ -150,7 +151,7 @@ class ProcessInfo:
 
     def mark_alive(self) -> None:
         """Called by the watchdog each time the process is confirmed alive."""
-        self.last_seen_alive = datetime.now(timezone.utc)
+        self.last_seen_alive = utc_now()
         if self.health not in (HealthStatus.DEGRADED, HealthStatus.COOLDOWN):
             self.health = HealthStatus.HEALTHY
 
@@ -167,7 +168,7 @@ class ProcessInfo:
         Returns True if the size grew (or the tracked file changed), False if
         it appears to be stalled (no size growth since last call).
         """
-        now = datetime.now(timezone.utc)
+        now = utc_now()
 
         # New file started — reset tracking
         if file_path != self._stall_tracked_path:
@@ -189,7 +190,7 @@ class ProcessInfo:
         """Seconds since the tracked file last grew, or None if unknown."""
         if self._stall_last_size_change_at is None:
             return None
-        return (datetime.now(timezone.utc) - self._stall_last_size_change_at).total_seconds()
+        return (utc_now() - self._stall_last_size_change_at).total_seconds()
 
     @property
     def last_file_size(self) -> Optional[int]:
@@ -210,10 +211,10 @@ class _RestartHistory:
     _cooldown_until: Optional[datetime] = field(default=None)
 
     def record_attempt(self) -> None:
-        self._timestamps.append(datetime.now(timezone.utc))
+        self._timestamps.append(utc_now())
 
     def count_in_window(self, window_seconds: float) -> int:
-        cutoff = datetime.now(timezone.utc).timestamp() - window_seconds
+        cutoff = utc_now().timestamp() - window_seconds
         return sum(1 for ts in self._timestamps if ts.timestamp() >= cutoff)
 
     def last_restart_time(self) -> Optional[datetime]:
@@ -222,17 +223,17 @@ class _RestartHistory:
     def is_in_cooldown(self) -> bool:
         if self._cooldown_until is None:
             return False
-        return datetime.now(timezone.utc) < self._cooldown_until
+        return utc_now() < self._cooldown_until
 
     def cooldown_remaining_seconds(self) -> float:
         if self._cooldown_until is None:
             return 0.0
-        remaining = (self._cooldown_until - datetime.now(timezone.utc)).total_seconds()
+        remaining = (self._cooldown_until - utc_now()).total_seconds()
         return max(0.0, remaining)
 
     def enter_cooldown(self, seconds: float) -> None:
         from datetime import timedelta
-        self._cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+        self._cooldown_until = utc_now() + timedelta(seconds=seconds)
 
     def exit_cooldown(self) -> None:
         self._cooldown_until = None
@@ -287,7 +288,7 @@ class ProcessManager:
         settings = get_settings()
         log_dir = settings.logs_dir / "channels" / channel_id
         log_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        ts = utc_now().strftime("%Y%m%d-%H%M%S")
         return log_dir / f"ffmpeg-{ts}.log"
 
     def _prune_old_logs(self, channel_id: str) -> None:
@@ -465,7 +466,7 @@ class ProcessManager:
             with SessionLocal() as db:
                 db.add(RestartHistoryRecord(
                     channel_id=channel_id,
-                    attempted_at=datetime.now(timezone.utc),
+                    attempted_at=utc_now(),
                 ))
                 db.commit()
         except Exception as exc:
@@ -482,7 +483,7 @@ class ProcessManager:
         from datetime import timedelta
         settings = get_settings()
         window_seconds = settings.restart_backoff_window_seconds
-        since = datetime.now(timezone.utc) - timedelta(seconds=window_seconds)
+        since = utc_now() - timedelta(seconds=window_seconds)
 
         try:
             rows = (
@@ -546,7 +547,7 @@ class ProcessManager:
         resolve_channel_path(config.paths.record_dir).mkdir(parents=True, exist_ok=True)
 
         # Write command header to log (text mode)
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = utc_now().isoformat()
         with open(log_path, "w", encoding="utf-8") as lf:
             lf.write(f"[{now_iso}] COMMAND: {format_command_for_log(cmd)}\n")
             lf.write(f"[{now_iso}] STARTING\n")
@@ -572,7 +573,7 @@ class ProcessManager:
             # Always close the parent's copy — subprocess keeps its own fd.
             log_fh.close()
 
-        started_at = datetime.now(timezone.utc)
+        started_at = utc_now()
         info = ProcessInfo(
             channel_id=channel_id,
             pid=process.pid,
@@ -656,7 +657,7 @@ class ProcessManager:
             logger.error("[%s] Error while stopping process: %s", channel_id, exc)
 
         exit_code = info.exit_code()
-        stopped_at = datetime.now(timezone.utc)
+        stopped_at = utc_now()
         del self._procs[channel_id]
 
         # Update the most recent running record in DB
@@ -728,7 +729,7 @@ class ProcessManager:
             # Only process the most-recent record per channel
             if channel_id in seen_channels:
                 rec.status = ProcessStatus.STOPPED.value
-                rec.stopped_at = datetime.now(timezone.utc)
+                rec.stopped_at = utc_now()
                 marked_stopped += 1
                 continue
             seen_channels.add(channel_id)
@@ -738,7 +739,7 @@ class ProcessManager:
             if was_alive and channel_id not in self._procs:
                 # Adopt the orphaned process
                 log_path = Path(rec.log_path) if rec.log_path else self._new_log_path(channel_id)
-                started_at = rec.started_at or datetime.now(timezone.utc)
+                started_at = rec.started_at or utc_now()
                 info = ProcessInfo(
                     channel_id=channel_id,
                     pid=rec.pid,
@@ -752,7 +753,7 @@ class ProcessManager:
                 logger.info("[%s] Adopted orphaned PID %d.", channel_id, rec.pid)
             else:
                 rec.status = ProcessStatus.STOPPED.value
-                rec.stopped_at = datetime.now(timezone.utc)
+                rec.stopped_at = utc_now()
                 marked_stopped += 1
                 if rec.pid:
                     logger.warning(
