@@ -51,6 +51,7 @@ from app.services.ffmpeg_builder import (
     build_hls_preview_from_udp_command,
 )
 from app.services.hls_preview_manager import HlsPreviewManager
+from app.services.process_manager import ProcessManager, _is_nvenc_failure
 
 
 # ---------------------------------------------------------------------------
@@ -608,3 +609,358 @@ def test_rts1_round_trip_with_recording_preview_output():
     assert cfg2.recording_preview_output is not None
     assert cfg2.recording_preview_output.video_codec == cfg.recording_preview_output.video_codec
     assert cfg2.preview.input_mode == "from_udp"
+
+
+# ---------------------------------------------------------------------------
+# build_hls_preview_from_udp_command — codec validation (Phase 12 sanity)
+# ---------------------------------------------------------------------------
+
+def test_build_hls_preview_from_udp_raises_for_non_h264_video_codec(tmp_path):
+    """Non-H.264 video codec (e.g. mpeg4) must raise ValueError with clear message."""
+    cfg = _base_config(rpo_kwargs={"enabled": True, "video_codec": "mpeg4"})
+    with pytest.raises(ValueError, match="H.264"):
+        build_hls_preview_from_udp_command(cfg, tmp_path)
+
+
+def test_build_hls_preview_from_udp_raises_for_hevc_video_codec(tmp_path):
+    """HEVC/libx265 codec must also raise ValueError (not H.264)."""
+    cfg = _base_config(rpo_kwargs={"enabled": True, "video_codec": "libx265"})
+    with pytest.raises(ValueError, match="H.264"):
+        build_hls_preview_from_udp_command(cfg, tmp_path)
+
+
+def test_build_hls_preview_from_udp_raises_for_non_aac_audio(tmp_path):
+    """Non-AAC audio codec (e.g. mp3) must raise ValueError when audio enabled."""
+    cfg = _base_config(
+        rpo_kwargs={
+            "enabled": True,
+            "video_codec": "libx264",
+            "audio_enabled": True,
+            "audio_codec": "libmp3lame",
+        }
+    )
+    with pytest.raises(ValueError, match="AAC"):
+        build_hls_preview_from_udp_command(cfg, tmp_path)
+
+
+def test_build_hls_preview_from_udp_no_audio_codec_check_when_disabled(tmp_path):
+    """Non-AAC audio codec must NOT raise when audio_enabled=False."""
+    cfg = _base_config(
+        rpo_kwargs={
+            "enabled": True,
+            "video_codec": "libx264",
+            "audio_enabled": False,
+            "audio_codec": "libmp3lame",
+        }
+    )
+    # Should not raise
+    cmd = build_hls_preview_from_udp_command(cfg, tmp_path)
+    assert "-an" in cmd
+
+
+def test_build_hls_preview_from_udp_nvenc_codec_accepted(tmp_path):
+    """h264_nvenc is H.264-compatible and must not raise ValueError."""
+    cfg = _base_config(
+        rpo_kwargs={"enabled": True, "video_codec": "h264_nvenc", "audio_enabled": False}
+    )
+    cmd = build_hls_preview_from_udp_command(cfg, tmp_path)
+    assert cmd[0] == cfg.ffmpeg_path
+
+
+# ---------------------------------------------------------------------------
+# ProcessManager — NVENC fallback (Phase 12 sanity)
+# ---------------------------------------------------------------------------
+
+
+def _make_db_mock():
+    """Return a minimal SQLAlchemy session mock that accepts add/commit/query."""
+    db = MagicMock()
+    # query(...).filter(...).order_by(...).first() chain → None (no existing record)
+    db.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+    return db
+
+
+def test_process_manager_nvenc_fallback_retries_with_libx264(tmp_path):
+    """
+    When fallback_to_cpu=True and FFmpeg exits immediately with NVENC keywords
+    in stderr, start() must retry once with video_codec='libx264'.
+    """
+    cfg = _base_config(
+        rpo_kwargs={
+            "enabled": True,
+            "video_codec": "h264_nvenc",
+            "fallback_to_cpu": True,
+        }
+    )
+
+    # First process exits immediately; second stays alive.
+    nvenc_proc = _mock_process(returncode=1)
+    cpu_proc = _mock_process(returncode=None)
+
+    db = _make_db_mock()
+    pm = ProcessManager()
+
+    with (
+        patch("app.services.process_manager.subprocess.Popen", side_effect=[nvenc_proc, cpu_proc]),
+        patch("app.services.process_manager._is_nvenc_failure", return_value=True),
+        patch("app.services.process_manager.time.sleep"),
+        patch("app.services.process_manager.get_settings") as mock_settings,
+        patch("app.services.process_manager.resolve_channel_path", return_value=tmp_path),
+        patch("app.services.process_manager.shutil.disk_usage") as mock_du,
+    ):
+        ms = MagicMock()
+        ms.logs_dir = tmp_path / "logs"
+        ms.logs_dir.mkdir(parents=True, exist_ok=True)
+        ms.min_free_disk_bytes = 0
+        ms.log_max_files_per_channel = 10
+        ms.restart_pre_delay_seconds = 0
+        mock_settings.return_value = ms
+        mock_du.return_value = MagicMock(free=10 * 1024 * 1024 * 1024)
+
+        info = pm.start("rts1", cfg, db)
+
+    # The returned info must belong to the CPU-fallback process.
+    assert info.pid == cpu_proc.pid
+    assert pm.is_running("rts1")
+
+
+def test_process_manager_nvenc_no_fallback_when_not_configured(tmp_path):
+    """
+    When fallback_to_cpu=False, start() must NOT retry even if FFmpeg exits
+    immediately — it simply returns the ProcessInfo as normal.
+    """
+    cfg = _base_config(
+        rpo_kwargs={
+            "enabled": True,
+            "video_codec": "h264_nvenc",
+            "fallback_to_cpu": False,
+        }
+    )
+
+    # Process stays alive (no crash).
+    proc = _mock_process(returncode=None)
+
+    db = _make_db_mock()
+    pm = ProcessManager()
+
+    with (
+        patch("app.services.process_manager.subprocess.Popen", return_value=proc),
+        patch("app.services.process_manager.time.sleep"),
+        patch("app.services.process_manager.get_settings") as mock_settings,
+        patch("app.services.process_manager.resolve_channel_path", return_value=tmp_path),
+        patch("app.services.process_manager.shutil.disk_usage") as mock_du,
+    ):
+        ms = MagicMock()
+        ms.logs_dir = tmp_path / "logs"
+        ms.logs_dir.mkdir(parents=True, exist_ok=True)
+        ms.min_free_disk_bytes = 0
+        ms.log_max_files_per_channel = 10
+        mock_settings.return_value = ms
+        mock_du.return_value = MagicMock(free=10 * 1024 * 1024 * 1024)
+
+        info = pm.start("rts1", cfg, db)
+
+    assert info.pid == proc.pid
+
+
+def test_process_manager_nvenc_fallback_not_triggered_for_libx264(tmp_path):
+    """
+    When video_codec is already 'libx264', the fallback block must not execute
+    (no extra sleep or retry).
+    """
+    cfg = _base_config(
+        rpo_kwargs={
+            "enabled": True,
+            "video_codec": "libx264",
+            "fallback_to_cpu": True,  # True but codec already CPU
+        }
+    )
+
+    proc = _mock_process(returncode=None)
+    db = _make_db_mock()
+    pm = ProcessManager()
+
+    with (
+        patch("app.services.process_manager.subprocess.Popen", return_value=proc),
+        patch("app.services.process_manager.time.sleep") as mock_sleep,
+        patch("app.services.process_manager.get_settings") as mock_settings,
+        patch("app.services.process_manager.resolve_channel_path", return_value=tmp_path),
+        patch("app.services.process_manager.shutil.disk_usage") as mock_du,
+    ):
+        ms = MagicMock()
+        ms.logs_dir = tmp_path / "logs"
+        ms.logs_dir.mkdir(parents=True, exist_ok=True)
+        ms.min_free_disk_bytes = 0
+        ms.log_max_files_per_channel = 10
+        mock_settings.return_value = ms
+        mock_du.return_value = MagicMock(free=10 * 1024 * 1024 * 1024)
+
+        info = pm.start("rts1", cfg, db)
+
+    # _NVENC_CRASH_WAIT sleep must NOT have been called.
+    mock_sleep.assert_not_called()
+    assert info.pid == proc.pid
+
+
+# ---------------------------------------------------------------------------
+# _is_nvenc_failure helper
+# ---------------------------------------------------------------------------
+
+def test_is_nvenc_failure_detects_nvenc_keyword(tmp_path):
+    log = tmp_path / "test.log"
+    log.write_text(
+        "Error initializing output stream: Error while opening encoder\n"
+        "NVENC Error: No NVENC capable devices found\n"
+    )
+    assert _is_nvenc_failure(log) is True
+
+
+def test_is_nvenc_failure_detects_nvcuda_keyword(tmp_path):
+    log = tmp_path / "test.log"
+    log.write_text("Cannot load nvcuda.dll\n")
+    assert _is_nvenc_failure(log) is True
+
+
+def test_is_nvenc_failure_returns_false_for_unrelated_error(tmp_path):
+    log = tmp_path / "test.log"
+    log.write_text("Invalid data found when processing input\n")
+    assert _is_nvenc_failure(log) is False
+
+
+def test_is_nvenc_failure_returns_false_for_missing_file(tmp_path):
+    log = tmp_path / "nonexistent.log"
+    assert _is_nvenc_failure(log) is False
+
+
+# ---------------------------------------------------------------------------
+# Preview branch yuv420p pixel-format conversion — Phase 12 fix
+# ---------------------------------------------------------------------------
+
+def test_filter_complex_preview_branch_includes_yuv420p():
+    """Preview branch must include format=yuv420p so h264_nvenc receives a
+    compatible pixel format (input is often yuv422p from Decklink)."""
+    cfg = _base_config(rpo_enabled=True)
+    fc = _build_filter_complex_with_preview(cfg)
+    # The [raw_p] → [prev_v] branch must contain format=yuv420p
+    assert "format=yuv420p" in fc
+    # Verify it appears in the prev branch (last segment, after second [raw_p])
+    raw_p_segments = fc.split("[raw_p]")
+    # raw_p_segments[-1] is the content after the second [raw_p] label
+    assert "format=yuv420p" in raw_p_segments[-1]
+
+
+def test_filter_complex_main_branch_does_not_force_yuv420p():
+    """Main recording branch must NOT have format=yuv420p forced upon it;
+    the operator controls the main encoding format via capture/encoding config."""
+    cfg = _base_config(rpo_enabled=True)
+    fc = _build_filter_complex_with_preview(cfg)
+    # The [raw_m] → [main_v] branch must not contain format=yuv420p
+    # Extract the main branch content between [raw_m] and [main_v]
+    main_segment = fc.split("[raw_m]")[1].split("[main_v]")[0]
+    assert "format=yuv420p" not in main_segment
+
+
+def test_filter_complex_preview_chain_order():
+    """format=yuv420p must come after fps reduction (scale,fps,format=yuv420p)."""
+    rpo = RecordingPreviewOutputConfig(enabled=True, width=480, height=270, fps=10)
+    cfg = _base_config(rpo_enabled=True)
+    cfg.recording_preview_output = rpo
+    fc = _build_filter_complex_with_preview(cfg)
+    # Extract preview branch (content after the second [raw_p] label)
+    raw_p_parts = fc.split("[raw_p]")
+    raw_p_part = raw_p_parts[-1]
+    # scale must come before format=yuv420p
+    assert raw_p_part.index("scale=") < raw_p_part.index("format=yuv420p")
+    # fps must come before format=yuv420p
+    assert raw_p_part.index("fps=") < raw_p_part.index("format=yuv420p")
+
+
+def test_build_ffmpeg_command_with_preview_nvenc_has_yuv420p_in_filter():
+    """Full dual-output command with h264_nvenc must contain format=yuv420p in
+    the filter_complex string for the preview branch."""
+    cfg = _base_config(
+        rpo_kwargs={
+            "enabled": True,
+            "video_codec": "h264_nvenc",
+            "preset": "p1",
+            "fail_safe_mode": False,
+        }
+    )
+    cmd = build_ffmpeg_command(cfg)
+    assert "-filter_complex" in cmd
+    fc_value = cmd[cmd.index("-filter_complex") + 1]
+    assert "format=yuv420p" in fc_value
+
+
+# ---------------------------------------------------------------------------
+# drawtext localtime escaping — Phase 12 fix
+# ---------------------------------------------------------------------------
+
+from app.services.ffmpeg_builder import _build_drawtext_filter, _escape_time_format
+from app.models.schemas import OverlayConfig
+
+
+def test_escape_time_format_preserves_colons_and_hyphens():
+    """Colons and hyphens must NOT be backslash-escaped: they are inside
+    single-quoted FFmpeg text option values where they are already literal.
+    Escaping them would pass \\: to drawtext, which breaks %{localtime:FORMAT}."""
+    result = _escape_time_format("%d-%m-%y %H:%M:%S")
+    assert "\\:" not in result
+    assert "\\-" not in result
+    assert ":" in result
+    assert "-" in result
+
+
+def test_escape_time_format_escapes_backslash():
+    """Backslash must be escaped as \\\\ so it survives single-quote context."""
+    assert _escape_time_format("%H\\%M") == "%H\\\\%M"
+
+
+def test_escape_time_format_escapes_single_quote():
+    """Single quote must be escaped as \\' to avoid breaking the surrounding quotes."""
+    assert _escape_time_format("%d'%m") == "%d\\'%m"
+
+
+def test_build_drawtext_filter_localtime_colon_not_escaped():
+    """The colon between 'localtime' and the format must be a plain colon,
+    not \\: — FFmpeg's drawtext text expander requires a literal : as separator
+    in %{localtime:FORMAT} and does not unescape \\: inside single-quoted values."""
+    overlay = OverlayConfig(enabled=True, time_format="%d-%m-%y %H:%M:%S")
+    dt = _build_drawtext_filter(overlay)
+    # The text option value must contain %{localtime: with a plain colon
+    assert "%{localtime:" in dt
+    # Must NOT have the escaped form \: immediately after localtime
+    assert "%{localtime\\:" not in dt
+
+
+def test_build_drawtext_filter_text_in_single_quotes():
+    """text option value must be wrapped in single quotes."""
+    overlay = OverlayConfig(enabled=True)
+    dt = _build_drawtext_filter(overlay)
+    # Find the ":text=" option (after colon separator, not inside "drawtext=")
+    assert ":text='" in dt
+
+
+# ---------------------------------------------------------------------------
+# RecordingPreviewOutputConfig — pixel_format_output field (Phase 12 fix)
+# ---------------------------------------------------------------------------
+
+def test_recording_preview_output_pixel_format_output_default_none():
+    """pixel_format_output must default to None (not forced)."""
+    rpo = RecordingPreviewOutputConfig()
+    assert rpo.pixel_format_output is None
+
+
+def test_recording_preview_output_pixel_format_output_can_be_set():
+    """pixel_format_output can be set to yuv420p for explicit format control."""
+    rpo = RecordingPreviewOutputConfig(pixel_format_output="yuv420p")
+    assert rpo.pixel_format_output == "yuv420p"
+
+
+def test_recording_preview_output_pixel_format_output_round_trip():
+    """pixel_format_output survives JSON round-trip."""
+    rpo = RecordingPreviewOutputConfig(pixel_format_output="yuv420p")
+    data = rpo.model_dump_json()
+    rpo2 = RecordingPreviewOutputConfig.model_validate_json(data)
+    assert rpo2.pixel_format_output == "yuv420p"
+

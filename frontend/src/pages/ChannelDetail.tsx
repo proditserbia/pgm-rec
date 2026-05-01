@@ -4,7 +4,7 @@ import {
   getChannel, startChannel, stopChannel, restartChannel,
   getChannelLogs, getChannelCommand, getChannelWatchdog, getChannelAnomalies,
   startPreview, stopPreview, getPreviewStatus,
-  getPreviewLogs, getChannelDiagnostics,
+  getPreviewLogs, getChannelDiagnostics, reloadChannelConfig,
 } from '../api/client'
 import type {
   ChannelDetailResponse, WatchdogEventResponse, SegmentAnomalyResponse,
@@ -66,6 +66,11 @@ export default function ChannelDetail() {
   // Phase 9: channel diagnostics (admin only, on-demand)
   const [diagnostics, setDiagnostics] = useState<ChannelDiagnosticsResponse | null>(null)
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
+
+  // Config reload state (admin only)
+  const [reloadBusy, setReloadBusy] = useState(false)
+  const [reloadMsg, setReloadMsg] = useState<string | null>(null)
+  const [reloadError, setReloadError] = useState<string | null>(null)
 
   const fetchDetail = useCallback(async () => {
     if (!id) return
@@ -171,6 +176,18 @@ export default function ChannelDetail() {
     } catch { /* ignore */ }
   }
 
+  async function handleReloadConfig() {
+    if (!id) return
+    setReloadBusy(true); setReloadMsg(null); setReloadError(null)
+    try {
+      const r = await reloadChannelConfig(id)
+      setReloadMsg(r.message)
+      await fetchDetail()
+    } catch (e) {
+      setReloadError(e instanceof Error ? e.message : 'Reload failed')
+    } finally { setReloadBusy(false) }
+  }
+
   function renderLogLine(line: string, i: number) {
     const lower = line.toLowerCase()
     const cls =
@@ -216,8 +233,25 @@ export default function ChannelDetail() {
             onClick={() => setConfirm('stop')}>Stop</button>
           <button className="btn btn-warning btn-sm" disabled={busy}
             onClick={() => setConfirm('restart')}>Restart</button>
+          <button
+            className="btn btn-secondary btn-sm"
+            disabled={reloadBusy}
+            title="Re-read channel JSON config from disk and apply to DB"
+            onClick={handleReloadConfig}
+          >
+            {reloadBusy ? 'Reloading…' : '↻ Reload Config'}
+          </button>
         </div>
       )}
+      {reloadMsg && (
+        <div style={{
+          background: '#f0fff4', border: '1px solid #a8e6c0', borderRadius: 4,
+          padding: '6px 12px', fontSize: 12, color: '#276749', marginBottom: 10,
+        }}>
+          {reloadMsg}
+        </div>
+      )}
+      {reloadError && <ErrorBanner message={reloadError} />}
 
       {/* Status */}
       <div className="card">
@@ -373,6 +407,32 @@ export default function ChannelDetail() {
         <div className="card-row"><span className="card-label">Record dir</span><span className="card-value" style={{ fontFamily: 'monospace', fontSize: 12 }}>{config.paths.record_dir}</span></div>
         <div className="card-row"><span className="card-label">Timezone</span><span className="card-value">{config.timezone}</span></div>
         <div className="card-row"><span className="card-label">Preview</span><span className="card-value">{config.preview.width}×{config.preview.height} @ {config.preview.hls_fps}fps / {config.preview.video_bitrate}</span></div>
+        <div className="card-row">
+          <span className="card-label">Preview source</span>
+          <span className="card-value" style={{ fontFamily: 'monospace', fontSize: 12 }}>
+            {config.preview.input_mode}
+          </span>
+        </div>
+        {config.recording_preview_output && (
+          <>
+            <div className="card-row">
+              <span className="card-label">UDP preview</span>
+              <span className="card-value">
+                {config.recording_preview_output.enabled
+                  ? <span style={{ color: '#2e7d32', fontWeight: 600 }}>enabled</span>
+                  : <span style={{ color: '#888' }}>disabled</span>}
+              </span>
+            </div>
+            {config.recording_preview_output.enabled && (
+              <div className="card-row">
+                <span className="card-label">UDP URL</span>
+                <span className="card-value" style={{ fontFamily: 'monospace', fontSize: 12 }}>
+                  {config.recording_preview_output.url}
+                </span>
+              </div>
+            )}
+          </>
+        )}
       </div>
 
       {/* FFmpeg command — admin only */}

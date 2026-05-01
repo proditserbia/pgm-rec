@@ -44,7 +44,27 @@ export interface PreviewConfig {
   encoder: string
   segment_time: number
   list_size: number
-  input_mode: 'direct_capture' | 'from_recording_output' | 'disabled'
+  input_mode: 'direct_capture' | 'from_recording_output' | 'from_udp' | 'disabled'
+  fallback_to_cpu: boolean
+}
+
+export interface RecordingPreviewOutputConfig {
+  enabled: boolean
+  url: string
+  format: string
+  video_codec: string
+  preset: string | null
+  tune: string | null
+  width: number
+  height: number
+  fps: number
+  bitrate: string
+  audio_enabled: boolean
+  audio_codec: string
+  audio_bitrate: string
+  audio_sample_rate: number
+  fail_safe_mode: boolean
+  fallback_to_cpu: boolean
 }
 
 export interface ChannelConfig {
@@ -52,6 +72,7 @@ export interface ChannelConfig {
   ffmpeg_path: string; timezone: string
   capture: CaptureConfig; encoding: EncodingConfig; filters: FilterConfig
   segmentation: SegmentConfig; paths: PathConfig; retention: RetentionConfig; preview: PreviewConfig
+  recording_preview_output: RecordingPreviewOutputConfig | null
 }
 
 export interface ChannelDetailResponse {
@@ -62,6 +83,13 @@ export interface ChannelDetailResponse {
 
 export interface ActionResponse {
   success: boolean; message: string; channel_id: string; status: ProcessStatus
+}
+
+export interface ConfigReloadResponse {
+  channel_id: string
+  config_changed: boolean
+  message: string
+  config: ChannelConfig
 }
 
 export interface LogsResponse {

@@ -31,6 +31,7 @@ from ...models.schemas import (
     ChannelStatusResponse,
     ChannelSummary,
     CommandPreviewResponse,
+    ConfigReloadResponse,
     HealthStatus,
     LogsResponse,
     ProcessHistoryEntry,
@@ -211,6 +212,81 @@ def preview_command(channel_id: str, db: DbDep, _: AdminDep):
         channel_id=channel_id,
         command=cmd,
         command_str=format_command_for_log(cmd),
+    )
+
+
+@router.post("/{channel_id}/reload-config", response_model=ConfigReloadResponse)
+def reload_channel_config(channel_id: str, db: DbDep, _: AdminDep):
+    """
+    Reload channel configuration from the JSON file on disk into the DB.
+
+    Git pull changes JSON files only; the DB is not updated automatically.
+    Call this endpoint after pulling new channel configs to apply them without
+    restarting the server.
+
+    - Reads `<channels_config_dir>/<channel_id>.json`
+    - Validates the JSON using ChannelConfig
+    - Replaces the DB channel's config_json, name, display_name, and enabled flag
+    - Returns the effective (new) config and whether the config changed
+    """
+    from ...config.settings import get_settings
+    import json
+
+    settings = get_settings()
+    json_path = settings.channels_config_dir / f"{channel_id}.json"
+    if not json_path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No JSON config file found for channel '{channel_id}'. "
+                f"Expected: {json_path}"
+            ),
+        )
+
+    try:
+        raw = json_path.read_text(encoding="utf-8")
+        new_config = ChannelConfig.model_validate_json(raw)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Channel config file '{json_path.name}' failed validation: {exc}",
+        )
+
+    if new_config.id != channel_id:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Config file id='{new_config.id}' does not match "
+                f"channel_id='{channel_id}'."
+            ),
+        )
+
+    ch = _get_channel_or_404(channel_id, db)
+    new_json = new_config.model_dump_json()
+    config_changed = ch.config_json != new_json
+
+    ch.config_json = new_json
+    ch.name = new_config.name
+    ch.display_name = new_config.display_name
+    ch.enabled = new_config.enabled
+    db.commit()
+    db.refresh(ch)
+
+    if config_changed:
+        import logging
+        logging.getLogger(__name__).info(
+            "Channel '%s' DB config reloaded from JSON (config changed).", channel_id
+        )
+
+    return ConfigReloadResponse(
+        channel_id=channel_id,
+        config_changed=config_changed,
+        message=(
+            f"Config reloaded from {json_path.name}."
+            if config_changed
+            else "Config unchanged — DB already matches JSON."
+        ),
+        config=new_config,
     )
 
 

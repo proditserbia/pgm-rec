@@ -97,9 +97,10 @@ class RecordingPreviewOutputConfig(BaseModel):
     - ``fail_safe_mode=True`` (default): logs a prominent WARNING when NVENC is
       requested so operators know the risk.  Does NOT suppress NVENC; set
       ``video_codec="libx264"`` if you want guaranteed-safe CPU encoding.
-    - ``fallback_to_cpu=True``: informational flag for future callers — signals
-      that if the process crashes the caller may retry with ``libx264``.
-      No automatic retry logic exists at the FFmpeg command level.
+    - ``fallback_to_cpu=True``: if FFmpeg exits immediately after start with an
+      NVENC-related error, ``ProcessManager.start()`` retries once using
+      ``video_codec="libx264"`` for the preview output.  Main recording
+      settings (``encoding.*``) are never modified by the fallback.
     """
 
     enabled: bool = False
@@ -128,8 +129,15 @@ class RecordingPreviewOutputConfig(BaseModel):
     # When True (default): emit a WARNING log if NVENC is configured, reminding
     # the operator that a codec failure inside recording will stop recording.
     fail_safe_mode: bool = True
-    # Informational hint: if True, callers may retry with libx264 after failure.
+    # When True: if FFmpeg exits immediately after start with an NVENC-related
+    # error, ProcessManager.start() will retry once using video_codec='libx264'
+    # for the preview output.  Main recording settings are never changed.
     fallback_to_cpu: bool = False
+    # Optional explicit output pixel format for the main recording stream.
+    # Example: "yuv420p" for broader browser/player compatibility.
+    # When None (default) the pixel format is determined by the encoder;
+    # do not set this unless a specific format is required.
+    pixel_format_output: Optional[str] = None
 
 
 class EncodingConfig(BaseModel):
@@ -408,6 +416,19 @@ class ChannelDiagnosticsResponse(BaseModel):
         'ffmpeg -list_devices true -f dshow -i dummy  '
         '(run on the recording machine)'
     )
+
+
+# ─── Config reload response ───────────────────────────────────────────────────
+
+class ConfigReloadResponse(BaseModel):
+    """Response returned by POST /channels/{id}/reload-config."""
+
+    channel_id: str
+    # True if the DB config was actually replaced (JSON differed from DB).
+    # False if they were already identical (no-op).
+    config_changed: bool
+    message: str
+    config: ChannelConfig
 
 
 # ─── Preview response models — Phase 2 ───────────────────────────────────────
