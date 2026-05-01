@@ -413,6 +413,19 @@ class ChannelDiagnosticsResponse(BaseModel):
     )
 
 
+# ─── Config reload response ───────────────────────────────────────────────────
+
+class ConfigReloadResponse(BaseModel):
+    """Response returned by POST /channels/{id}/reload-config."""
+
+    channel_id: str
+    # True if the DB config was actually replaced (JSON differed from DB).
+    # False if they were already identical (no-op).
+    config_changed: bool
+    message: str
+    config: ChannelConfig
+
+
 # ─── Preview response models — Phase 2 ───────────────────────────────────────
 
 class PreviewHealth(str, Enum):

@@ -228,6 +228,49 @@ def _log_startup_config() -> None:
     )
 
 
+def _warn_db_config_differs_from_json(db) -> None:
+    """
+    Startup check: compare each channel's DB config_json against its JSON file.
+
+    When a git pull updates the channel JSON files, the DB is not updated
+    automatically.  This warning tells operators which channels need a
+    `POST /channels/{id}/reload-config` call.
+    """
+    settings = get_settings()
+    cfg_dir = settings.channels_config_dir
+    if not cfg_dir.exists():
+        return
+
+    import json as _json
+
+    for cfg_file in sorted(cfg_dir.glob("*.json")):
+        try:
+            new_config = ChannelConfig.model_validate_json(
+                cfg_file.read_text(encoding="utf-8")
+            )
+        except Exception:
+            continue  # already warned by _seed_channels
+
+        ch = db.query(Channel).filter(Channel.id == new_config.id).first()
+        if ch is None:
+            continue  # channel not yet seeded; _seed_channels handles this
+
+        # Compare canonical JSON (round-trip normalised) to avoid
+        # false positives from key ordering differences.
+        try:
+            db_config = ChannelConfig.model_validate_json(ch.config_json)
+        except Exception:
+            continue
+
+        if db_config.model_dump_json() != new_config.model_dump_json():
+            logger.warning(
+                "Channel %s DB config differs from JSON. "
+                "Use POST /api/v1/channels/%s/reload-config to apply changes.",
+                new_config.id,
+                new_config.id,
+            )
+
+
 def _reconcile_stale_exports(db) -> None:
     """
     Phase 6.2 — mark any IN_PROGRESS / RUNNING export jobs as FAILED on startup.
@@ -287,6 +330,11 @@ async def lifespan(app: FastAPI):
     # Seed channels from JSON config files
     with SessionLocal() as db:
         _seed_channels(db)
+
+    # Warn if any channel DB config differs from its JSON file on disk
+    # (git pull updates JSON files but not the DB).
+    with SessionLocal() as db:
+        _warn_db_config_differs_from_json(db)
 
     # Seed default admin user (Phase 4)
     with SessionLocal() as db:

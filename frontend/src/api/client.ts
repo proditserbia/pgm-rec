@@ -5,7 +5,7 @@ import type {
   ResolveRangeRequest, ResolveRangeResponse,
   ExportJobRequest, ExportJobResponse,
   HlsPreviewStatusResponse, PreviewLogsResponse, ChannelDiagnosticsResponse,
-  TokenResponse, UserResponse,
+  TokenResponse, UserResponse, ConfigReloadResponse,
 } from '../types'
 
 export const BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) || 'http://localhost:8000'
@@ -79,6 +79,8 @@ export const getChannelAnomalies = (id: string) =>
   request<SegmentAnomalyResponse[]>(`/api/v1/channels/${id}/anomalies`)
 export const getChannelDebug = (id: string) =>
   request<ChannelDebugResponse>(`/api/v1/channels/${id}/debug`)
+export const reloadChannelConfig = (id: string) =>
+  request<ConfigReloadResponse>(`/api/v1/channels/${id}/reload-config`, { method: 'POST' })
 
 // ── System ─────────────────────────────────────────────────────────────────
 export const getSystemDisk = () => request<DiskUsageResponse>('/api/v1/system/disk')
