@@ -133,6 +133,11 @@ class RecordingPreviewOutputConfig(BaseModel):
     # error, ProcessManager.start() will retry once using video_codec='libx264'
     # for the preview output.  Main recording settings are never changed.
     fallback_to_cpu: bool = False
+    # Optional explicit output pixel format for the main recording stream.
+    # Example: "yuv420p" for broader browser/player compatibility.
+    # When None (default) the pixel format is determined by the encoder;
+    # do not set this unless a specific format is required.
+    pixel_format_output: Optional[str] = None
 
 
 class EncodingConfig(BaseModel):

@@ -59,13 +59,21 @@ def _escape_time_format(fmt: str) -> str:
     """
     Escape a strftime format string for use inside the drawtext ``text`` option.
 
-    In FFmpeg filter option context colons and hyphens are special and must be
-    escaped with a backslash so they reach the drawtext renderer intact.
+    The text option value is always wrapped in single quotes (see
+    :func:`_build_drawtext_filter`).  Inside single-quoted FFmpeg filter option
+    values, only ``\\`` (backslash) and ``'`` (single quote) are special — colons
+    and hyphens are **literal** and must not be escaped.  Escaping them with
+    ``\\:`` / ``\\-`` would cause drawtext to receive those backslashes literally
+    (since no unescaping happens inside single quotes), which prevents
+    ``%{localtime:FORMAT}`` from being recognised and produces the FFmpeg error
+    ``%{localtime} requires at most 1 arguments``.
 
     Example:
-      %d-%m-%y %H:%M:%S  →  %d\\-%m\\-%y %H\\:%M\\:%S
+      %d-%m-%y %H:%M:%S  →  %d-%m-%y %H:%M:%S  (unchanged — no escaping needed)
     """
-    return fmt.replace(":", "\\:").replace("-", "\\-")
+    # Only backslash and single-quote are special inside single-quoted FFmpeg
+    # option values; escape them so the string is safe to embed in '...'.
+    return fmt.replace("\\", "\\\\").replace("'", "\\'")
 
 
 def _build_drawtext_filter(overlay: OverlayConfig) -> str:
@@ -81,8 +89,11 @@ def _build_drawtext_filter(overlay: OverlayConfig) -> str:
     )
     fontfile = _escape_fontfile(font_path)
     time_fmt = _escape_time_format(overlay.time_format)
-    # Braces in the localtime macro must be escaped in Python f-strings with {{}}
-    text = f"'%{{localtime\\:{time_fmt}}}'"
+    # Braces in the localtime macro must be escaped in Python f-strings with {{}}.
+    # The colon separating "localtime" from the format string is a plain ":" —
+    # drawtext expects a literal colon here.  We are inside single quotes so no
+    # further FFmpeg option-level escaping is needed for that colon.
+    text = f"'%{{localtime:{time_fmt}}}'"
 
     parts = [
         f"fontsize={overlay.fontsize}",
@@ -217,7 +228,7 @@ def _build_filter_complex_with_preview(config: ChannelConfig) -> str:
 
         [0:v]split=2[raw_m][raw_p];
         [raw_m]drawtext=...,scale=1024:576,yadif[main_v];
-        [raw_p]scale=480:270,fps=10[prev_v]
+        [raw_p]scale=480:270,fps=10,format=yuv420p[prev_v]
     """
     rpo = config.recording_preview_output  # guaranteed non-None by caller
 
@@ -232,8 +243,14 @@ def _build_filter_complex_with_preview(config: ChannelConfig) -> str:
         main_filters.append("yadif")
     main_chain = ",".join(main_filters)
 
-    # ── Preview branch: scale + fps ───────────────────────────────────────
-    prev_chain = f"scale={rpo.width}:{rpo.height},fps={rpo.fps}"
+    # ── Preview branch: scale + fps + yuv420p ────────────────────────────
+    # h264_nvenc (and some other hardware encoders) only accept yuv420p; the
+    # raw capture pixel format is often yuv422p (e.g. Decklink uyvy422 decoded
+    # to yuv422p).  Adding format=yuv420p here ensures the preview encoder
+    # always receives a compatible pixel format regardless of the input.
+    # The main recording branch is left unchanged — libx264 accepts yuv422p
+    # and the operator may intentionally want to keep that format.
+    prev_chain = f"scale={rpo.width}:{rpo.height},fps={rpo.fps},format=yuv420p"
 
     return (
         f"[0:v]split=2[raw_m][raw_p];"
