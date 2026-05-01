@@ -73,6 +73,8 @@ def _escape_time_format(fmt: str) -> str:
     """
     # Only backslash and single-quote are special inside single-quoted FFmpeg
     # option values; escape them so the string is safe to embed in '...'.
+    # Escape backslash first, then single-quote.  Order matters: escaping '
+    # before \ would cause a newly-introduced \ (from \') to be re-escaped.
     return fmt.replace("\\", "\\\\").replace("'", "\\'")
 
 
