@@ -264,6 +264,7 @@ def _reconcile_channel_configs(db) -> None:
 
     import json as _json
 
+    any_updated = False
     for cfg_file in sorted(cfg_dir.glob("*.json")):
         try:
             new_config = ChannelConfig.model_validate_json(
@@ -290,6 +291,7 @@ def _reconcile_channel_configs(db) -> None:
             ch.name = new_config.name
             ch.display_name = new_config.display_name
             ch.enabled = new_config.enabled
+            any_updated = True
             logger.info(
                 "Channel %s: JSON differs from DB — config auto-updated from JSON "
                 "(channel_config_mode=json_override_db).",
@@ -304,7 +306,7 @@ def _reconcile_channel_configs(db) -> None:
                 new_config.id,
             )
 
-    if mode == "json_override_db":
+    if mode == "json_override_db" and any_updated:
         db.commit()
 
 

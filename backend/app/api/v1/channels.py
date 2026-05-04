@@ -74,8 +74,12 @@ def _load_channel_config(ch: Channel) -> ChannelConfig:
                 return ChannelConfig.model_validate_json(
                     json_path.read_text(encoding="utf-8")
                 )
-            except Exception:
-                pass  # fall back to DB copy below
+            except Exception as exc:
+                logger.warning(
+                    "Channel '%s': failed to parse JSON config file '%s' "
+                    "(channel_config_mode=json) — falling back to DB copy. Error: %s",
+                    ch.id, json_path, exc,
+                )
 
     return ChannelConfig.model_validate_json(ch.config_json)
 

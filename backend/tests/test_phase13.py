@@ -382,8 +382,9 @@ def test_reconcile_mode_json_override_db_no_commit_when_same(tmp_path):
     with patch("app.main.get_settings", return_value=settings_mock):
         _reconcile_channel_configs(db)
 
-    # No changes → commit still called (idempotent), but config_json unchanged
+    # No changes → config_json unchanged and commit is NOT called
     assert db_ch.config_json == cfg.model_dump_json()
+    db.commit.assert_not_called()
 
 
 def test_reconcile_mode_json_logs_info_and_no_db_sync(tmp_path, caplog):
