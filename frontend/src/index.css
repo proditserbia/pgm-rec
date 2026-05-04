@@ -231,7 +231,7 @@ tr:hover td { background: #fafafa; }
 .monitor-viewport {
   position: relative;
   width: 100%;
-  max-width: 960px;
+  max-width: 1000px;
   margin: 0 auto;
   background: #000;
 }
