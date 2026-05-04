@@ -55,47 +55,69 @@ def _escape_fontfile(path: str) -> str:
     return f"'{escaped}'"
 
 
-def _escape_time_format(fmt: str) -> str:
+def _escape_time_format(fmt: str, *, for_filter_complex: bool = False) -> str:
     """
     Escape a strftime format string for use inside the drawtext ``text`` option.
 
     The text option value is always wrapped in single quotes (see
     :func:`_build_drawtext_filter`).  Inside single-quoted FFmpeg filter option
-    values, only ``\\`` (backslash) and ``'`` (single quote) are special — colons
-    and hyphens are **literal** and must not be escaped.  Escaping them with
-    ``\\:`` / ``\\-`` would cause drawtext to receive those backslashes literally
-    (since no unescaping happens inside single quotes), which prevents
-    ``%{localtime:FORMAT}`` from being recognised and produces the FFmpeg error
-    ``%{localtime} requires at most 1 arguments``.
+    values, ``\\`` (backslash) and ``'`` (single quote) are always special and
+    must be escaped.
 
-    Example:
-      %d-%m-%y %H:%M:%S  →  %d-%m-%y %H:%M:%S  (unchanged — no escaping needed)
+    When *for_filter_complex* is ``True`` (i.e. the filter will be embedded in a
+    ``-filter_complex`` argument), colons must also be escaped as ``\\:`` because
+    FFmpeg's filter-graph parser performs an additional colon-splitting pass on the
+    filter option string **before** single-quote un-quoting.  Leaving colons bare
+    inside ``%{localtime:FORMAT}`` causes FFmpeg to treat the colon as an option
+    separator and fail with *"%{localtime} requires at most 1 arguments"*.
+
+    When *for_filter_complex* is ``False`` (normal ``-vf`` mode) colons inside
+    single-quoted values are already protected and must **not** be escaped.
+
+    Examples:
+      ``-vf`` mode  (for_filter_complex=False):
+        %d-%m-%y %H:%M:%S  →  %d-%m-%y %H:%M:%S  (unchanged)
+      ``-filter_complex`` mode  (for_filter_complex=True):
+        %d-%m-%y %H:%M:%S  →  %d-%m-%y %H\\:%M\\:%S
     """
-    # Only backslash and single-quote are special inside single-quoted FFmpeg
-    # option values; escape them so the string is safe to embed in '...'.
     # Escape backslash first, then single-quote.  Order matters: escaping '
     # before \ would cause a newly-introduced \ (from \') to be re-escaped.
-    return fmt.replace("\\", "\\\\").replace("'", "\\'")
+    result = fmt.replace("\\", "\\\\").replace("'", "\\'")
+    if for_filter_complex:
+        # Colons must be escaped so the filter-graph parser doesn't split on them.
+        result = result.replace(":", "\\:")
+    return result
 
 
-def _build_drawtext_filter(overlay: OverlayConfig) -> str:
+def _build_drawtext_filter(
+    overlay: OverlayConfig, *, for_filter_complex: bool = False
+) -> str:
     """
     Build the ``drawtext=...`` filter string from overlay config.
 
     Selects the platform-appropriate font path and applies all necessary
     FFmpeg filter-level escaping.  The resulting string is passed directly
-    as the -vf argument value (no additional shell quoting needed).
+    as the ``-vf`` argument value or embedded in a ``-filter_complex`` graph;
+    no additional shell quoting is needed (always use ``shell=False``).
+
+    *for_filter_complex* must be ``True`` when the filter will be part of a
+    ``-filter_complex`` argument.  In that mode the colon separating
+    ``localtime`` from the format string and all colons **inside** the format
+    string (e.g. ``%H:%M:%S``) are escaped as ``\\:`` so that FFmpeg's
+    filter-graph parser does not treat them as option separators.  When
+    ``False`` (normal ``-vf`` mode) single-quote wrapping already protects
+    colons and no extra escaping is required.
     """
     font_path = (
         overlay.fontfile_win if platform.system() == "Windows" else overlay.fontfile_linux
     )
     fontfile = _escape_fontfile(font_path)
-    time_fmt = _escape_time_format(overlay.time_format)
+    time_fmt = _escape_time_format(overlay.time_format, for_filter_complex=for_filter_complex)
+    # In filter_complex mode the colon that separates "localtime" from the
+    # format string must be escaped too; in -vf mode single-quotes protect it.
+    localtime_sep = "\\:" if for_filter_complex else ":"
     # Braces in the localtime macro must be escaped in Python f-strings with {{}}.
-    # The colon separating "localtime" from the format string is a plain ":" —
-    # drawtext expects a literal colon here.  We are inside single quotes so no
-    # further FFmpeg option-level escaping is needed for that colon.
-    text = f"'%{{localtime:{time_fmt}}}'"
+    text = f"'%{{localtime{localtime_sep}{time_fmt}}}'"
 
     parts = [
         f"fontsize={overlay.fontsize}",
@@ -237,7 +259,9 @@ def _build_filter_complex_with_preview(config: ChannelConfig) -> str:
     # ── Main branch: replicate the -vf chain ──────────────────────────────
     main_filters: list[str] = []
     if config.filters.overlay.enabled:
-        main_filters.append(_build_drawtext_filter(config.filters.overlay))
+        main_filters.append(
+            _build_drawtext_filter(config.filters.overlay, for_filter_complex=True)
+        )
     main_filters.append(
         f"scale={config.filters.scale_width}:{config.filters.scale_height}"
     )
