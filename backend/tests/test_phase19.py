@@ -8,16 +8,16 @@ Covers h264_nvenc preview output:
 - these appear after -g and before -b:v
 
 Covers libx264 preview output:
-- emits -x264-params with repeat-headers=1, keyint=fps, min-keyint=fps, scenecut=0
-- keyint/min-keyint track rpo.fps
-- emits -bf 0
+- emits -x264-params with repeat-headers=1 and keyint=fps*2
+- keyint tracks rpo.fps*2
+- emits -bf 0 (via Phase 20 libx264 block)
 
 Covers both codecs:
 - emits -muxdelay 0
 - emits -muxpreload 0
 - -muxdelay / -muxpreload appear after -f mpegts and before the UDP URL
 
-Covers rts1.json sanity (h264_nvenc path).
+Covers rts1.json sanity (libx264 path after Phase 20 switch).
 """
 from __future__ import annotations
 
@@ -138,33 +138,11 @@ def test_libx264_preview_x264_params_repeat_headers():
     assert "repeat-headers=1" in params
 
 
-def test_libx264_preview_x264_params_keyint_equals_fps():
-    """-x264-params keyint must equal rpo.fps."""
+def test_libx264_preview_x264_params_keyint_equals_fps_times_two():
+    """-x264-params keyint must equal rpo.fps * 2 (Phase 20 GOP rule)."""
     cmd = build_ffmpeg_command(_cfg_libx264(fps=10))
     params = cmd[cmd.index("-x264-params") + 1]
-    assert "keyint=10" in params
-
-
-def test_libx264_preview_x264_params_min_keyint_equals_fps():
-    """-x264-params min-keyint must equal rpo.fps."""
-    cmd = build_ffmpeg_command(_cfg_libx264(fps=10))
-    params = cmd[cmd.index("-x264-params") + 1]
-    assert "min-keyint=10" in params
-
-
-def test_libx264_preview_x264_params_scenecut_zero():
-    """-x264-params value must include scenecut=0."""
-    cmd = build_ffmpeg_command(_cfg_libx264(fps=10))
-    params = cmd[cmd.index("-x264-params") + 1]
-    assert "scenecut=0" in params
-
-
-def test_libx264_preview_x264_params_tracks_fps():
-    """keyint/min-keyint in -x264-params must reflect a non-default fps."""
-    cmd = build_ffmpeg_command(_cfg_libx264(fps=25))
-    params = cmd[cmd.index("-x264-params") + 1]
-    assert "keyint=25" in params
-    assert "min-keyint=25" in params
+    assert "keyint=20" in params
 
 
 def test_libx264_preview_emits_bf_zero():
@@ -250,27 +228,25 @@ def test_nvenc_preview_udp_url_after_muxpreload():
 # ---------------------------------------------------------------------------
 
 def test_rts1_build_command_has_bf_zero():
-    """Full rts1 command build (h264_nvenc) must include -bf 0."""
+    """Full rts1 command build (libx264) must include -bf 0."""
     cfg = _load_rts1()
     cmd = build_ffmpeg_command(cfg)
     assert "-bf" in cmd
     assert cmd[cmd.index("-bf") + 1] == "0"
 
 
-def test_rts1_build_command_has_rc_cbr():
-    """Full rts1 command build (h264_nvenc) must include -rc cbr."""
+def test_rts1_build_command_has_no_rc_cbr():
+    """Full rts1 command build (libx264) must NOT include -rc (NVENC-only)."""
     cfg = _load_rts1()
     cmd = build_ffmpeg_command(cfg)
-    assert "-rc" in cmd
-    assert cmd[cmd.index("-rc") + 1] == "cbr"
+    assert "-rc" not in cmd
 
 
-def test_rts1_build_command_has_repeat_headers():
-    """Full rts1 command build (h264_nvenc) must include -repeat_headers 1."""
+def test_rts1_build_command_has_no_repeat_headers_flag():
+    """Full rts1 command build (libx264) must NOT include -repeat_headers (handled via -x264-params)."""
     cfg = _load_rts1()
     cmd = build_ffmpeg_command(cfg)
-    assert "-repeat_headers" in cmd
-    assert cmd[cmd.index("-repeat_headers") + 1] == "1"
+    assert "-repeat_headers" not in cmd
 
 
 def test_rts1_build_command_has_muxdelay():

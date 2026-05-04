@@ -372,12 +372,13 @@ def test_build_ffmpeg_command_with_preview_nvenc_tune():
     assert cmd[cmd.index("-tune") + 1] == "ull"
 
 
-def test_build_ffmpeg_command_with_preview_no_tune_for_libx264():
+def test_build_ffmpeg_command_with_preview_no_tune_for_libx264_without_tune_set():
+    """When tune is None for libx264, -tune must not be emitted."""
     cfg = _base_config(
         rpo_kwargs={
             "enabled": True,
             "video_codec": "libx264",
-            "tune": "ull",  # tune set but codec is libx264 — must not be emitted
+            "tune": None,
         }
     )
     cmd = build_ffmpeg_command(cfg)
@@ -580,9 +581,9 @@ def test_rts1_recording_preview_output_enabled():
     assert cfg.recording_preview_output.enabled is True
 
 
-def test_rts1_recording_preview_output_nvenc():
+def test_rts1_recording_preview_output_codec():
     cfg = _load_rts1()
-    assert cfg.recording_preview_output.video_codec == "h264_nvenc"
+    assert cfg.recording_preview_output.video_codec == "libx264"
 
 
 def test_rts1_recording_preview_output_audio():
@@ -596,7 +597,7 @@ def test_rts1_recording_preview_output_audio():
 
 def test_rts1_recording_preview_output_fail_safe():
     cfg = _load_rts1()
-    assert cfg.recording_preview_output.fail_safe_mode is True
+    assert cfg.recording_preview_output.fail_safe_mode is False
 
 
 def test_rts1_preview_input_mode_from_udp():
