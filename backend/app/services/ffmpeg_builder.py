@@ -352,7 +352,7 @@ def _build_recording_command_with_preview(config: ChannelConfig) -> list[str]:
     cmd += ["-c:v", rpo.video_codec]
     if rpo.preset:
         cmd += ["-preset", rpo.preset]
-    if rpo.tune and rpo.video_codec == "h264_nvenc":
+    if rpo.tune and rpo.video_codec in ("h264_nvenc", "libx264"):
         cmd += ["-tune", rpo.tune]
     if rpo.video_codec == "h264_nvenc":
         # Phase 15: force IDR frames so SPS/PPS are included in every keyframe,
@@ -360,9 +360,28 @@ def _build_recording_command_with_preview(config: ChannelConfig) -> list[str]:
         # and the HLS remuxer.  GOP = fps means one IDR per second.
         cmd += ["-forced-idr", "1"]
         cmd += ["-g", str(rpo.fps)]
+        # Phase 19: no B-frames + CBR + repeat SPS/PPS so HLS can reliably
+        # create index.m3u8 without buffering or header-less segments.
+        cmd += ["-bf", "0"]
+        cmd += ["-rc", "cbr"]
+        cmd += ["-repeat_headers", "1"]
+    elif rpo.video_codec == "libx264":
+        # Phase 20: stable low-latency GOP for libx264 preview.
+        # gop = fps * 2 gives a keyframe every 2 seconds at the configured fps,
+        # which is generous enough for HLS but tight enough for low latency.
+        gop = rpo.fps * 2
+        cmd += ["-g", str(gop)]
+        cmd += ["-keyint_min", str(gop)]
+        cmd += ["-bf", "0"]
+        cmd += ["-sc_threshold", "0"]
+        # Embed SPS/PPS in every keyframe so HLS remuxer never lacks headers.
+        cmd += ["-x264-params", f"repeat-headers=1:keyint={gop}"]
     cmd += ["-b:v", rpo.bitrate]
 
     cmd += ["-f", rpo.format]
+    # Phase 19: reduce muxer buffering to improve HLS segment timeliness.
+    cmd += ["-muxdelay", "0"]
+    cmd += ["-muxpreload", "0"]
     # Phase 14: use send_url when set; fall back to legacy url field.
     cmd.append(rpo.send_url if rpo.send_url else rpo.url)
 

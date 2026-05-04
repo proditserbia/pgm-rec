@@ -6,8 +6,8 @@ Covers:
 - h264_nvenc preview output emits -g <fps>
 - -g value equals rpo.fps (one IDR per second)
 - libx264 preview output does NOT emit -forced-idr
-- libx264 preview output does NOT emit -g from these new options
-- rts1.json: h264_nvenc codec still set (required for Phase 15 options to apply)
+- libx264 preview output DOES emit -g (set to fps*2 from Phase 20)
+- rts1.json: switched to libx264 codec (Phase 20)
 """
 from __future__ import annotations
 
@@ -109,35 +109,34 @@ def test_libx264_preview_no_forced_idr():
     assert "-forced-idr" not in cmd
 
 
-def test_libx264_preview_no_g_option():
-    """-g must NOT be emitted for libx264 preview output."""
+def test_libx264_preview_emits_g():
+    """-g IS emitted for libx264 preview output (set to fps*2 from Phase 20)."""
     cmd = build_ffmpeg_command(_cfg_libx264())
-    assert "-g" not in cmd
+    assert "-g" in cmd
 
 
 # ---------------------------------------------------------------------------
 # rts1.json sanity
 # ---------------------------------------------------------------------------
 
-def test_rts1_nvenc_so_phase15_options_apply():
-    """rts1.json must still use h264_nvenc so Phase 15 options are active."""
+def test_rts1_uses_libx264_codec():
+    """rts1.json uses libx264 codec (Phase 20 switch from h264_nvenc)."""
     cfg = _load_rts1()
     assert cfg.recording_preview_output is not None
-    assert cfg.recording_preview_output.video_codec == "h264_nvenc"
+    assert cfg.recording_preview_output.video_codec == "libx264"
 
 
-def test_rts1_build_command_has_forced_idr():
-    """Full rts1 command build must include -forced-idr 1."""
+def test_rts1_build_command_has_no_forced_idr():
+    """Full rts1 command build must NOT include -forced-idr (libx264 path)."""
     cfg = _load_rts1()
     cmd = build_ffmpeg_command(cfg)
-    assert "-forced-idr" in cmd
-    assert cmd[cmd.index("-forced-idr") + 1] == "1"
+    assert "-forced-idr" not in cmd
 
 
-def test_rts1_build_command_has_correct_g():
-    """Full rts1 command build must include -g matching rts1.json fps (10)."""
+def test_rts1_build_command_has_g_equal_to_fps_times_two():
+    """Full rts1 command build must include -g = fps*2 = 20 (libx264 path)."""
     cfg = _load_rts1()
     assert cfg.recording_preview_output.fps == 10
     cmd = build_ffmpeg_command(cfg)
     assert "-g" in cmd
-    assert cmd[cmd.index("-g") + 1] == "10"
+    assert cmd[cmd.index("-g") + 1] == "20"
