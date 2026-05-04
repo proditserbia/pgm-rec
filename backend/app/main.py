@@ -228,21 +228,43 @@ def _log_startup_config() -> None:
     )
 
 
-def _warn_db_config_differs_from_json(db) -> None:
+def _reconcile_channel_configs(db) -> None:
     """
-    Startup check: compare each channel's DB config_json against its JSON file.
+    Phase 18 — startup channel-config reconciliation.
 
-    When a git pull updates the channel JSON files, the DB is not updated
-    automatically.  This warning tells operators which channels need a
-    `POST /channels/{id}/reload-config` call.
+    Behaviour depends on PGMREC_CHANNEL_CONFIG_MODE:
+
+    ``"db"`` (default):
+        Compare each channel's DB config against its JSON file.  Log a WARNING
+        for every channel that differs so the operator knows a
+        ``POST /channels/{id}/reload-config`` is needed.
+
+    ``"json_override_db"``:
+        Automatically overwrite the DB config from the JSON file for every
+        channel where they differ.  Log INFO so the change is auditable.
+
+    ``"json"``:
+        JSON files are the live source of truth; the DB is bypassed for config
+        on every request.  No sync is performed here.
     """
     settings = get_settings()
+    mode = settings.channel_config_mode
     cfg_dir = settings.channels_config_dir
+
+    if mode == "json":
+        # Nothing to reconcile — configs are always read from JSON at request time.
+        logger.info(
+            "Channel config mode: 'json' — configs are read live from %s on every request.",
+            cfg_dir,
+        )
+        return
+
     if not cfg_dir.exists():
         return
 
     import json as _json
 
+    any_updated = False
     for cfg_file in sorted(cfg_dir.glob("*.json")):
         try:
             new_config = ChannelConfig.model_validate_json(
@@ -253,22 +275,39 @@ def _warn_db_config_differs_from_json(db) -> None:
 
         ch = db.query(Channel).filter(Channel.id == new_config.id).first()
         if ch is None:
-            continue  # channel not yet seeded; _seed_channels handles this
+            continue  # not yet seeded; _seed_channels handles this
 
-        # Compare canonical JSON (round-trip normalised) to avoid
-        # false positives from key ordering differences.
+        # Canonical round-trip comparison to avoid key-ordering false positives.
         try:
             db_config = ChannelConfig.model_validate_json(ch.config_json)
         except Exception:
             continue
 
-        if db_config.model_dump_json() != new_config.model_dump_json():
+        if db_config.model_dump_json() == new_config.model_dump_json():
+            continue  # identical — nothing to do
+
+        if mode == "json_override_db":
+            ch.config_json = new_config.model_dump_json()
+            ch.name = new_config.name
+            ch.display_name = new_config.display_name
+            ch.enabled = new_config.enabled
+            any_updated = True
+            logger.info(
+                "Channel %s: JSON differs from DB — config auto-updated from JSON "
+                "(channel_config_mode=json_override_db).",
+                new_config.id,
+            )
+        else:
+            # mode == "db"
             logger.warning(
-                "Channel %s DB config differs from JSON. "
-                "Use POST /api/v1/channels/%s/reload-config to apply changes.",
+                "Channel %s JSON differs from DB. Using DB config. "
+                "Run POST /api/v1/channels/%s/reload-config to apply JSON changes.",
                 new_config.id,
                 new_config.id,
             )
+
+    if mode == "json_override_db" and any_updated:
+        db.commit()
 
 
 def _reconcile_stale_exports(db) -> None:
@@ -334,7 +373,7 @@ async def lifespan(app: FastAPI):
     # Warn if any channel DB config differs from its JSON file on disk
     # (git pull updates JSON files but not the DB).
     with SessionLocal() as db:
-        _warn_db_config_differs_from_json(db)
+        _reconcile_channel_configs(db)
 
     # Seed default admin user (Phase 4)
     with SessionLocal() as db:

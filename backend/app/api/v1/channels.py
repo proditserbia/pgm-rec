@@ -14,6 +14,7 @@ Endpoints:
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated
@@ -40,14 +41,47 @@ from ...models.schemas import (
 from ...services.ffmpeg_builder import build_ffmpeg_command, format_command_for_log
 from ...services.process_manager import get_process_manager, _tail_file
 from ...utils import utc_now
+from ...config.settings import get_settings
 from .deps import AdminDep, AnyRoleDep
 
 router = APIRouter(prefix="/channels", tags=["channels"])
 
 DbDep = Annotated[Session, Depends(get_db)]
 
+logger = logging.getLogger(__name__)
+
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def _load_channel_config(ch: Channel) -> ChannelConfig:
+    """
+    Load channel configuration honouring PGMREC_CHANNEL_CONFIG_MODE.
+
+    - ``"db"`` (default): read from ``ch.config_json`` stored in the DB.
+    - ``"json_override_db"``: same as ``"db"`` — JSON was already synced to DB
+      at startup by ``_reconcile_channel_configs``.
+    - ``"json"``: read directly from the JSON file on disk; falls back to the
+      DB copy if the file is missing or cannot be parsed.
+    """
+    settings = get_settings()
+    mode = settings.channel_config_mode
+
+    if mode == "json":
+        json_path = settings.channels_config_dir / f"{ch.id}.json"
+        if json_path.is_file():
+            try:
+                return ChannelConfig.model_validate_json(
+                    json_path.read_text(encoding="utf-8")
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Channel '%s': failed to parse JSON config file '%s' "
+                    "(channel_config_mode=json) — falling back to DB copy. Error: %s",
+                    ch.id, json_path, exc,
+                )
+
+    return ChannelConfig.model_validate_json(ch.config_json)
 
 def _get_channel_or_404(channel_id: str, db: Session) -> Channel:
     ch = db.query(Channel).filter(Channel.id == channel_id).first()
@@ -103,7 +137,7 @@ def list_channels(db: DbDep, _: AnyRoleDep):
 def get_channel(channel_id: str, db: DbDep, _: AnyRoleDep):
     """Full channel details including config and live process status."""
     ch = _get_channel_or_404(channel_id, db)
-    config = ChannelConfig.model_validate_json(ch.config_json)
+    config = _load_channel_config(ch)
     return ChannelDetailResponse(
         summary=_summary(ch),
         config=config,
@@ -125,7 +159,7 @@ def start_channel(channel_id: str, db: DbDep, _: AdminDep):
     if not ch.enabled:
         raise HTTPException(status_code=400, detail=f"Channel '{channel_id}' is disabled.")
     pm = get_process_manager()
-    config = ChannelConfig.model_validate_json(ch.config_json)
+    config = _load_channel_config(ch)
     try:
         info = pm.start(channel_id, config, db)
     except RuntimeError as exc:
@@ -168,7 +202,7 @@ def restart_channel(channel_id: str, db: DbDep, _: AdminDep):
     if not ch.enabled:
         raise HTTPException(status_code=400, detail=f"Channel '{channel_id}' is disabled.")
     pm = get_process_manager()
-    config = ChannelConfig.model_validate_json(ch.config_json)
+    config = _load_channel_config(ch)
     try:
         info = pm.restart(channel_id, config, db)
     except Exception as exc:
@@ -206,7 +240,7 @@ def preview_command(channel_id: str, db: DbDep, _: AdminDep):
     Useful for auditing and debugging without actually starting recording.
     """
     ch = _get_channel_or_404(channel_id, db)
-    config = ChannelConfig.model_validate_json(ch.config_json)
+    config = _load_channel_config(ch)
     cmd = build_ffmpeg_command(config)
     return CommandPreviewResponse(
         channel_id=channel_id,
@@ -229,7 +263,6 @@ def reload_channel_config(channel_id: str, db: DbDep, _: AdminDep):
     - Replaces the DB channel's config_json, name, display_name, and enabled flag
     - Returns the effective (new) config and whether the config changed
     """
-    from ...config.settings import get_settings
     import json
 
     settings = get_settings()
@@ -273,8 +306,7 @@ def reload_channel_config(channel_id: str, db: DbDep, _: AdminDep):
     db.refresh(ch)
 
     if config_changed:
-        import logging
-        logging.getLogger(__name__).info(
+        logger.info(
             "Channel '%s' DB config reloaded from JSON (config changed).", channel_id
         )
 
@@ -337,7 +369,7 @@ def get_channel_diagnostics(channel_id: str, db: DbDep, _: AdminDep):
 
     ch = _get_channel_or_404(channel_id, db)
     pm = get_process_manager()
-    config = ChannelConfig.model_validate_json(ch.config_json)
+    config = _load_channel_config(ch)
 
     cmd = build_ffmpeg_command(config)
     cmd_str = format_command_for_log(cmd)

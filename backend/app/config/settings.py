@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -211,6 +211,26 @@ class Settings(BaseSettings):
     # Channel JSON can then use: "paths": {"record_dir": "rts1/1_record", ...}
     # Effective path becomes: D:\AutoRec\record\rts1\1_record
     recording_root: Optional[Path] = None
+
+    # Phase 18 — Channel config source-of-truth mode.
+    # Controls how channel configuration is resolved at startup and on each
+    # API request.  Set via PGMREC_CHANNEL_CONFIG_MODE in .env or env vars.
+    #
+    # "db" (default / current behaviour):
+    #   JSON seeds the DB once on first startup; the DB is authoritative.
+    #   A WARNING is logged if JSON and DB differ; use
+    #   POST /channels/{id}/reload-config to apply changes.
+    #
+    # "json":
+    #   Channel config is always read directly from the JSON files on disk.
+    #   The DB stores a seed copy but is bypassed for every API request.
+    #   Editing a JSON file takes effect immediately — no reload needed.
+    #
+    # "json_override_db":
+    #   On every startup, JSON files automatically overwrite the DB config
+    #   for any channels where they differ (equivalent to running
+    #   reload-config for all channels automatically on startup).
+    channel_config_mode: Literal["db", "json", "json_override_db"] = "db"
 
     # ── .env / database_url validation ────────────────────────────────────────
 

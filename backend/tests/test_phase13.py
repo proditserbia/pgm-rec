@@ -161,7 +161,7 @@ def _run_reload(tmp_path: Path, db_config: ChannelConfig, json_config: ChannelCo
     settings_mock = MagicMock()
     settings_mock.channels_config_dir = tmp_path
 
-    with patch("app.config.settings.get_settings", return_value=settings_mock):
+    with patch("app.api.v1.channels.get_settings", return_value=settings_mock):
         result = reload_channel_config(json_config.id, db, MagicMock())
 
     return result, db_ch
@@ -215,7 +215,7 @@ def test_reload_config_404_when_json_missing(tmp_path):
     settings_mock = MagicMock()
     settings_mock.channels_config_dir = tmp_path  # empty dir — no JSON files
 
-    with patch("app.config.settings.get_settings", return_value=settings_mock):
+    with patch("app.api.v1.channels.get_settings", return_value=settings_mock):
         with pytest.raises(HTTPException) as exc_info:
             reload_channel_config("rts1", db, MagicMock())
 
@@ -236,7 +236,7 @@ def test_reload_config_422_when_json_invalid(tmp_path):
     settings_mock = MagicMock()
     settings_mock.channels_config_dir = tmp_path
 
-    with patch("app.config.settings.get_settings", return_value=settings_mock):
+    with patch("app.api.v1.channels.get_settings", return_value=settings_mock):
         with pytest.raises(HTTPException) as exc_info:
             reload_channel_config("rts1", db, MagicMock())
 
@@ -260,7 +260,7 @@ def test_reload_config_422_on_id_mismatch(tmp_path):
     settings_mock = MagicMock()
     settings_mock.channels_config_dir = tmp_path
 
-    with patch("app.config.settings.get_settings", return_value=settings_mock):
+    with patch("app.api.v1.channels.get_settings", return_value=settings_mock):
         with pytest.raises(HTTPException) as exc_info:
             reload_channel_config("rts1", db, MagicMock())
 
@@ -269,12 +269,12 @@ def test_reload_config_422_on_id_mismatch(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# _warn_db_config_differs_from_json startup check
+# _reconcile_channel_configs startup check (formerly _warn_db_config_differs_from_json)
 # ---------------------------------------------------------------------------
 
-def test_warn_db_config_differs_logs_warning(tmp_path, caplog):
-    """Startup check logs WARNING when DB config differs from JSON file."""
-    from app.main import _warn_db_config_differs_from_json
+def test_reconcile_mode_db_logs_warning_on_diff(tmp_path, caplog):
+    """mode=db: logs WARNING and hints reload-config when DB differs from JSON."""
+    from app.main import _reconcile_channel_configs
 
     old_cfg = _minimal_config(name="OLD")
     new_cfg = _minimal_config(name="NEW")
@@ -287,18 +287,21 @@ def test_warn_db_config_differs_logs_warning(tmp_path, caplog):
 
     settings_mock = MagicMock()
     settings_mock.channels_config_dir = tmp_path
+    settings_mock.channel_config_mode = "db"
 
     with patch("app.main.get_settings", return_value=settings_mock):
         with caplog.at_level(logging.WARNING, logger="app.main"):
-            _warn_db_config_differs_from_json(db)
+            _reconcile_channel_configs(db)
 
     assert any("reload-config" in r.message for r in caplog.records), \
         f"Expected reload-config mention in warnings, got: {[r.message for r in caplog.records]}"
+    # Must NOT have auto-updated the DB
+    db.commit.assert_not_called()
 
 
-def test_warn_db_config_no_warning_when_same(tmp_path, caplog):
-    """Startup check does NOT warn when DB config matches JSON file."""
-    from app.main import _warn_db_config_differs_from_json
+def test_reconcile_mode_db_no_warning_when_same(tmp_path, caplog):
+    """mode=db: no warning when DB config matches JSON file."""
+    from app.main import _reconcile_channel_configs
 
     cfg = _minimal_config()
     _write_channel_json(tmp_path, cfg)
@@ -308,29 +311,194 @@ def test_warn_db_config_no_warning_when_same(tmp_path, caplog):
 
     settings_mock = MagicMock()
     settings_mock.channels_config_dir = tmp_path
+    settings_mock.channel_config_mode = "db"
 
     with patch("app.main.get_settings", return_value=settings_mock):
         with caplog.at_level(logging.WARNING, logger="app.main"):
-            _warn_db_config_differs_from_json(db)
+            _reconcile_channel_configs(db)
 
-    # No warnings expected
     assert not any(r.levelno >= logging.WARNING for r in caplog.records)
 
 
-def test_warn_db_config_silent_when_no_json_dir(tmp_path, caplog):
-    """Startup check is silent when channels_config_dir doesn't exist."""
-    from app.main import _warn_db_config_differs_from_json
+def test_reconcile_mode_db_silent_when_no_json_dir(tmp_path, caplog):
+    """mode=db: silent when channels_config_dir doesn't exist."""
+    from app.main import _reconcile_channel_configs
 
     settings_mock = MagicMock()
     settings_mock.channels_config_dir = tmp_path / "nonexistent"
+    settings_mock.channel_config_mode = "db"
 
     db = MagicMock()
 
     with patch("app.main.get_settings", return_value=settings_mock):
         with caplog.at_level(logging.WARNING, logger="app.main"):
-            _warn_db_config_differs_from_json(db)
+            _reconcile_channel_configs(db)
 
     assert not any(r.levelno >= logging.WARNING for r in caplog.records)
+
+
+def test_reconcile_mode_json_override_db_auto_applies(tmp_path, caplog):
+    """mode=json_override_db: auto-updates DB config from JSON on startup."""
+    from app.main import _reconcile_channel_configs
+
+    old_cfg = _minimal_config(name="OLD")
+    new_cfg = _minimal_config(name="NEW")
+    _write_channel_json(tmp_path, new_cfg)
+
+    db_ch = _make_db_channel(old_cfg)
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = db_ch
+
+    settings_mock = MagicMock()
+    settings_mock.channels_config_dir = tmp_path
+    settings_mock.channel_config_mode = "json_override_db"
+
+    with patch("app.main.get_settings", return_value=settings_mock):
+        with caplog.at_level(logging.INFO, logger="app.main"):
+            _reconcile_channel_configs(db)
+
+    # DB must have been updated
+    assert db_ch.name == "NEW"
+    assert db_ch.config_json == new_cfg.model_dump_json()
+    db.commit.assert_called_once()
+    # No warnings
+    assert not any(r.levelno >= logging.WARNING for r in caplog.records)
+
+
+def test_reconcile_mode_json_override_db_no_commit_when_same(tmp_path):
+    """mode=json_override_db: no DB commit when configs already match."""
+    from app.main import _reconcile_channel_configs
+
+    cfg = _minimal_config()
+    _write_channel_json(tmp_path, cfg)
+    db_ch = _make_db_channel(cfg)
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = db_ch
+
+    settings_mock = MagicMock()
+    settings_mock.channels_config_dir = tmp_path
+    settings_mock.channel_config_mode = "json_override_db"
+
+    with patch("app.main.get_settings", return_value=settings_mock):
+        _reconcile_channel_configs(db)
+
+    # No changes → config_json unchanged and commit is NOT called
+    assert db_ch.config_json == cfg.model_dump_json()
+    db.commit.assert_not_called()
+
+
+def test_reconcile_mode_json_logs_info_and_no_db_sync(tmp_path, caplog):
+    """mode=json: logs INFO that JSON mode is active; does not sync DB."""
+    from app.main import _reconcile_channel_configs
+
+    settings_mock = MagicMock()
+    settings_mock.channels_config_dir = tmp_path
+    settings_mock.channel_config_mode = "json"
+
+    db = MagicMock()
+
+    with patch("app.main.get_settings", return_value=settings_mock):
+        with caplog.at_level(logging.INFO, logger="app.main"):
+            _reconcile_channel_configs(db)
+
+    assert any("json" in r.message.lower() for r in caplog.records), \
+        f"Expected 'json' mention in info log, got: {[r.message for r in caplog.records]}"
+    db.commit.assert_not_called()
+    db.query.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _load_channel_config helper — mode-aware config loading
+# ---------------------------------------------------------------------------
+
+def test_load_channel_config_mode_db_reads_from_db(tmp_path):
+    """mode=db: config is read from ch.config_json."""
+    from app.api.v1.channels import _load_channel_config
+
+    cfg = _minimal_config(name="DB_VERSION")
+    ch = _make_db_channel(cfg)
+
+    settings_mock = MagicMock()
+    settings_mock.channel_config_mode = "db"
+    settings_mock.channels_config_dir = tmp_path  # no JSON file present
+
+    with patch("app.api.v1.channels.get_settings", return_value=settings_mock):
+        result = _load_channel_config(ch)
+
+    assert result.name == "DB_VERSION"
+
+
+def test_load_channel_config_mode_json_reads_from_file(tmp_path):
+    """mode=json: config is read from the JSON file, not from ch.config_json."""
+    from app.api.v1.channels import _load_channel_config
+
+    db_cfg = _minimal_config(name="DB_VERSION")
+    json_cfg = _minimal_config(name="JSON_VERSION")
+    _write_channel_json(tmp_path, json_cfg)
+
+    ch = _make_db_channel(db_cfg)
+
+    settings_mock = MagicMock()
+    settings_mock.channel_config_mode = "json"
+    settings_mock.channels_config_dir = tmp_path
+
+    with patch("app.api.v1.channels.get_settings", return_value=settings_mock):
+        result = _load_channel_config(ch)
+
+    assert result.name == "JSON_VERSION"
+
+
+def test_load_channel_config_mode_json_fallback_to_db_when_file_missing(tmp_path):
+    """mode=json: falls back to DB copy when JSON file does not exist."""
+    from app.api.v1.channels import _load_channel_config
+
+    cfg = _minimal_config(name="DB_FALLBACK")
+    ch = _make_db_channel(cfg)
+
+    settings_mock = MagicMock()
+    settings_mock.channel_config_mode = "json"
+    settings_mock.channels_config_dir = tmp_path  # empty dir — no JSON
+
+    with patch("app.api.v1.channels.get_settings", return_value=settings_mock):
+        result = _load_channel_config(ch)
+
+    assert result.name == "DB_FALLBACK"
+
+
+def test_load_channel_config_mode_json_override_db_reads_from_db(tmp_path):
+    """mode=json_override_db: reads from DB (JSON was already synced at startup)."""
+    from app.api.v1.channels import _load_channel_config
+
+    cfg = _minimal_config(name="SYNCED_DB")
+    ch = _make_db_channel(cfg)
+
+    settings_mock = MagicMock()
+    settings_mock.channel_config_mode = "json_override_db"
+    settings_mock.channels_config_dir = tmp_path
+
+    with patch("app.api.v1.channels.get_settings", return_value=settings_mock):
+        result = _load_channel_config(ch)
+
+    assert result.name == "SYNCED_DB"
+
+
+# ---------------------------------------------------------------------------
+# channel_config_mode setting validation
+# ---------------------------------------------------------------------------
+
+def test_settings_channel_config_mode_default():
+    """Default channel_config_mode must be 'db'."""
+    from app.config.settings import Settings
+    s = Settings()
+    assert s.channel_config_mode == "db"
+
+
+def test_settings_channel_config_mode_valid_values():
+    """All three documented modes must be accepted by the Settings model."""
+    from app.config.settings import Settings
+    for mode in ("db", "json", "json_override_db"):
+        s = Settings(channel_config_mode=mode)
+        assert s.channel_config_mode == mode
 
 
 # ---------------------------------------------------------------------------
