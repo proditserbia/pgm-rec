@@ -81,7 +81,7 @@ export default function HlsPlayer({ channelId, onReady, onError }: Props) {
       })
       video.addEventListener('error', () => {
         setStatus('error')
-        onError?.('Video load error — Safari native HLS cannot send auth headers. Use Chrome or Edge for authenticated HLS.')
+        onError?.('Video load error — Safari native HLS cannot send auth headers. Use Chrome, Edge, or Firefox for authenticated HLS.')
       })
     } else {
       setStatus('error')
@@ -99,7 +99,7 @@ export default function HlsPlayer({ channelId, onReady, onError }: Props) {
           background: 'rgba(180,90,0,0.85)', color: '#fff',
           fontSize: 11, padding: '4px 10px', textAlign: 'center',
         }}>
-          Safari: authenticated HLS may not work — use Chrome or Edge for full support.
+          Safari: authenticated HLS may not work — use Chrome, Edge, or Firefox for full support.
         </div>
       )}
       {status === 'loading' && (
