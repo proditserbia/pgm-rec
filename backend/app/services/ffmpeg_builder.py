@@ -357,7 +357,8 @@ def _build_recording_command_with_preview(config: ChannelConfig) -> list[str]:
     cmd += ["-b:v", rpo.bitrate]
 
     cmd += ["-f", rpo.format]
-    cmd.append(rpo.url)
+    # Phase 14: use send_url when set; fall back to legacy url field.
+    cmd.append(rpo.send_url if rpo.send_url else rpo.url)
 
     return cmd
 
@@ -679,7 +680,13 @@ def build_hls_preview_from_udp_command(
     cmd += ["-fflags", "+nobuffer+genpts"]
 
     # ── UDP input ──────────────────────────────────────────────────────────
-    cmd += ["-i", rpo.url]
+    # Phase 14: use listen_url when set; fall back to legacy url field.
+    # The listener URL should include receive-side options such as
+    # overrun_nonfatal=1&fifo_size=50000000.  Using a distinct URL from the
+    # sender avoids the Windows "bind failed: Error -10048" error that occurs
+    # when both sides share the same URL object with sender-only options.
+    input_url = rpo.listen_url if rpo.listen_url else rpo.url
+    cmd += ["-i", input_url]
 
     # ── Video: copy H.264 stream (already encoded by recording process) ────
     cmd += ["-c:v", "copy"]

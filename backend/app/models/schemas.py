@@ -101,10 +101,36 @@ class RecordingPreviewOutputConfig(BaseModel):
       NVENC-related error, ``ProcessManager.start()`` retries once using
       ``video_codec="libx264"`` for the preview output.  Main recording
       settings (``encoding.*``) are never modified by the fallback.
+
+    UDP URL split — Phase 14:
+    On Windows the sender and receiver must NOT share the same URL string because
+    the FFmpeg UDP sender and the HLS-preview receiver each need different socket
+    options:
+
+    - ``send_url``   (recording output / sender):
+        ``udp://127.0.0.1:<port>?pkt_size=1316``
+    - ``listen_url`` (HLS preview input / receiver):
+        ``udp://127.0.0.1:<port>?overrun_nonfatal=1&fifo_size=50000000``
+
+    Only one process may bind to a given UDP port at a time.  Do NOT run
+    ffplay and the HLS preview process concurrently on the same port.  If you
+    get ``bind failed: Error number -10048``, stop all existing ffmpeg/ffplay
+    processes that hold that port and retry.
+
+    If ``send_url`` / ``listen_url`` are omitted, ``url`` is used as a fallback
+    for both roles (backward-compatible behaviour from Phase 12).
     """
 
     enabled: bool = False
+    # Legacy single-URL field — kept for backward compatibility.
+    # If send_url / listen_url are not set, url is used for both roles.
     url: str = "udp://127.0.0.1:23001?pkt_size=1316"
+    # Phase 14 — explicit sender URL used by the recording FFmpeg output.
+    # Example: "udp://127.0.0.1:23001?pkt_size=1316"
+    send_url: Optional[str] = None
+    # Phase 14 — explicit listener URL used by the HLS preview FFmpeg input.
+    # Example: "udp://127.0.0.1:23001?overrun_nonfatal=1&fifo_size=50000000"
+    listen_url: Optional[str] = None
     format: str = "mpegts"
 
     # ── Video ──────────────────────────────────────────────────────────────────
@@ -215,6 +241,14 @@ class PreviewConfig(BaseModel):
     # Phase 12 — informational hint: if from_udp mode fails, callers may fall
     # back to from_recording_output automatically.
     fallback_to_cpu: bool = False
+    # Phase 14 — per-channel UDP port for from_udp mode.
+    # Assign a unique port per channel so multiple channels can stream preview
+    # UDP simultaneously without port conflicts:
+    #   RTS1 → 23001, RTS2 → 23002, RTS3 → 23003, RTS_TEST → 23004
+    # Only one FFmpeg/ffplay listener may bind to a given port at a time.
+    # This field is informational metadata; the authoritative URLs are
+    # recording_preview_output.send_url and recording_preview_output.listen_url.
+    udp_port: Optional[int] = None
 
 
 class ChannelConfig(BaseModel):
