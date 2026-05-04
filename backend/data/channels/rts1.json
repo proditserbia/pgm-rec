@@ -54,10 +54,7 @@
   },
   "recording_preview_output": {
     "enabled": true,
-    "url": "udp://127.0.0.1:23001?pkt_size=1316",
-    "send_url": "udp://127.0.0.1:23001?pkt_size=1316",
-    "listen_url": "udp://127.0.0.1:23001?overrun_nonfatal=1&fifo_size=50000000",
-    "format": "mpegts",
+    "mode": "hls_direct",
     "video_codec": "libx264",
     "preset": "ultrafast",
     "tune": "zerolatency",
@@ -70,16 +67,16 @@
     "audio_bitrate": "96k",
     "audio_sample_rate": 48000,
     "fail_safe_mode": false,
-    "fallback_to_cpu": false
+    "fallback_to_cpu": false,
+    "hls_time": 2,
+    "hls_list_size": 5,
+    "hls_flags": "delete_segments+append_list+independent_segments"
   },
   "preview": {
     "enabled": false,
     "port": 23001,
     "scale": "320:180",
     "fps": 5,
-    "input_mode": "from_udp",
-    "fallback_to_cpu": true,
-    "udp_port": 23001,
-    "hls_mode": "auto"
+    "input_mode": "hls_direct"
   }
 }

@@ -86,8 +86,21 @@ class RecordingPreviewOutputConfig(BaseModel):
     the recording FFmpeg process — Phase 12.
 
     When enabled, ``build_ffmpeg_command()`` uses ``-filter_complex`` to split
-    the video pipeline and mux a low-resolution preview stream to a UDP
-    destination alongside the normal segment recording.
+    the video pipeline and write a low-resolution preview stream alongside the
+    normal segment recording.
+
+    Phase 22 — ``mode`` field selects the preview output format:
+
+    - ``"udp"`` (default): send preview stream to a UDP endpoint so a separate
+      HLS FFmpeg process can receive and remux it.  Legacy two-process design.
+      Requires ``recording_preview_output.send_url`` / ``listen_url`` to be set.
+    - ``"hls_direct"``: write HLS preview files **directly** from the recording
+      FFmpeg process to ``data/preview/{channel_id}/``.  No second FFmpeg
+      process is needed.  This is the recommended mode on Windows because it
+      eliminates the fragile UDP → HLS remux timing chain.
+    - ``"disabled"``: recording FFmpeg produces no preview output even when
+      ``enabled=True``.  Useful to temporarily suppress preview without
+      removing the config block.
 
     ⚠️  SAFETY: This output runs inside the **same** FFmpeg process as recording.
     A bad codec configuration (e.g. ``h264_nvenc`` unavailable) will crash the
@@ -122,6 +135,9 @@ class RecordingPreviewOutputConfig(BaseModel):
     """
 
     enabled: bool = False
+    # Phase 22 — output mode: "udp" | "hls_direct" | "disabled"
+    # Default "udp" preserves backward compatibility with Phase 12–21 configs.
+    mode: str = "udp"
     # Legacy single-URL field — kept for backward compatibility.
     # If send_url / listen_url are not set, url is used for both roles.
     url: str = "udp://127.0.0.1:23001?pkt_size=1316"
@@ -164,6 +180,18 @@ class RecordingPreviewOutputConfig(BaseModel):
     # When None (default) the pixel format is determined by the encoder;
     # do not set this unless a specific format is required.
     pixel_format_output: Optional[str] = None
+
+    # ── HLS direct output settings (used when mode == "hls_direct") ───────────
+    # Phase 22 — controls the HLS muxer when mode="hls_direct".
+    # Each HLS segment duration in seconds.
+    hls_time: int = 2
+    # Number of segments to keep in the playlist (older ones are deleted).
+    hls_list_size: int = 5
+    # HLS muxer flags:
+    #   delete_segments    — remove old .ts files when they fall off the list
+    #   append_list        — append to existing playlist rather than rewriting
+    #   independent_segments — each segment starts with a keyframe (seekable)
+    hls_flags: str = "delete_segments+append_list+independent_segments"
 
 
 class EncodingConfig(BaseModel):
@@ -222,7 +250,7 @@ class PreviewConfig(BaseModel):
     encoder: str = "libx264"
     segment_time: int = 2
     list_size: int = 5
-    # Phase 9/10/12 — capture input mode for preview.
+    # Phase 9/10/12/22 — capture input mode for preview.
     # direct_capture       : open the same hardware device as recording (default).
     #   Works when the hardware supports concurrent access (e.g. some v4l2
     #   drivers).  On single-input Blackmagic Decklink systems this WILL
@@ -234,7 +262,12 @@ class PreviewConfig(BaseModel):
     # from_udp             : read from the UDP preview stream produced by the
     #   recording FFmpeg process (via recording_preview_output).  Near-live
     #   monitoring with audio; requires recording to be running with
-    #   recording_preview_output.enabled=True.
+    #   recording_preview_output.enabled=True and mode="udp".
+    # hls_direct           : the recording FFmpeg process writes HLS preview
+    #   files directly (recording_preview_output.mode="hls_direct").  No
+    #   separate HLS FFmpeg process is started; the preview manager simply
+    #   monitors the files produced by the recording process.  This is the
+    #   recommended mode on Windows — most robust, no UDP port contention.
     # disabled             : preview is explicitly disabled — start attempts
     #   return 409.
     input_mode: str = "direct_capture"

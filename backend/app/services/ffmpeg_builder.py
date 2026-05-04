@@ -29,7 +29,7 @@ import platform
 import shlex
 from pathlib import Path
 
-from ..config.settings import resolve_channel_path
+from ..config.settings import get_settings, resolve_channel_path
 from ..models.schemas import ChannelConfig, OverlayConfig
 
 logger = logging.getLogger(__name__)
@@ -388,6 +388,111 @@ def _build_recording_command_with_preview(config: ChannelConfig) -> list[str]:
     return cmd
 
 
+def _build_recording_command_with_hls_direct(config: ChannelConfig) -> list[str]:
+    """
+    Build a dual-output FFmpeg recording command that writes HLS preview files
+    directly — Phase 22 (``recording_preview_output.mode = "hls_direct"``).
+
+    Uses the same ``-filter_complex`` split as the UDP variant but routes the
+    preview branch to an HLS muxer rather than a UDP destination:
+
+    - First output:  main recording (stream_segment muxer → file chunks)
+    - Second output: HLS preview (hls muxer → data/preview/{channel_id}/)
+
+    This eliminates the fragile UDP → second-FFmpeg → HLS timing chain that
+    is unreliable on Windows.  The recording process writes ``index.m3u8`` and
+    ``seg%05d.ts`` files directly; the backend serves them to the browser.
+
+    The HLS output directory is ``settings.preview_dir / config.id``.  The
+    directory is **not** created here — the caller (``HlsPreviewManager`` or
+    the watchdog) is responsible for ensuring it exists before FFmpeg starts.
+
+    Safe for ``subprocess.Popen(cmd, shell=False)``.
+    """
+    rpo = config.recording_preview_output  # guaranteed non-None + enabled by caller
+    enc = config.encoding
+    seg = config.segmentation
+
+    if rpo.fail_safe_mode and rpo.video_codec == "h264_nvenc":
+        logger.warning(
+            "[ffmpeg-builder][%s] recording_preview_output hls_direct: NVENC "
+            "(h264_nvenc) is enabled inside the recording FFmpeg process "
+            "(fail_safe_mode=True).  If h264_nvenc is unavailable or "
+            "misconfigured the ENTIRE recording process will crash.  "
+            "Set video_codec='libx264' for a CPU-safe alternative.",
+            config.id,
+        )
+
+    # HLS output paths
+    output_dir = get_settings().preview_dir / config.id
+    playlist_path = str(output_dir / "index.m3u8")
+    segment_pattern = str(output_dir / "seg%05d.ts")
+
+    cmd: list[str] = [config.ffmpeg_path]
+
+    # ── Input ──────────────────────────────────────────────────────────────
+    cmd += _build_capture_args(config)
+
+    # ── Filter complex: split raw input into main_v + prev_v ───────────────
+    cmd += ["-filter_complex", _build_filter_complex_with_preview(config)]
+
+    # ── First output: main recording ───────────────────────────────────────
+    cmd += ["-map", "[main_v]", "-map", "0:a"]
+    cmd += ["-b:v", enc.video_bitrate]
+    cmd += ["-b:a", enc.audio_bitrate]
+    cmd += ["-c:v", enc.video_codec]
+    cmd += ["-preset", enc.preset]
+    cmd += ["-f", "stream_segment"]
+    cmd += ["-segment_time", seg.segment_time]
+    if seg.segment_atclocktime:
+        cmd += ["-segment_atclocktime", "1"]
+    if seg.reset_timestamps:
+        cmd += ["-reset_timestamps", "1"]
+    if seg.strftime:
+        cmd += ["-strftime", "1"]
+    cmd.append(_output_pattern(config))
+
+    # ── Second output: HLS preview written directly ────────────────────────
+    cmd += ["-map", "[prev_v]"]
+    if rpo.audio_enabled:
+        cmd += ["-map", "0:a"]
+        cmd += ["-c:a", rpo.audio_codec]
+        cmd += ["-b:a", rpo.audio_bitrate]
+        cmd += ["-ar", str(rpo.audio_sample_rate)]
+    else:
+        cmd += ["-an"]
+
+    cmd += ["-c:v", rpo.video_codec]
+    if rpo.preset:
+        cmd += ["-preset", rpo.preset]
+    if rpo.tune and rpo.video_codec in ("h264_nvenc", "libx264"):
+        cmd += ["-tune", rpo.tune]
+    if rpo.video_codec == "h264_nvenc":
+        cmd += ["-forced-idr", "1"]
+        cmd += ["-g", str(rpo.fps)]
+        cmd += ["-bf", "0"]
+        cmd += ["-rc", "cbr"]
+        cmd += ["-repeat_headers", "1"]
+    elif rpo.video_codec == "libx264":
+        gop = rpo.fps * 2
+        cmd += ["-g", str(gop)]
+        cmd += ["-keyint_min", str(gop)]
+        cmd += ["-bf", "0"]
+        cmd += ["-sc_threshold", "0"]
+        cmd += ["-x264-params", f"repeat-headers=1:keyint={gop}"]
+    cmd += ["-b:v", rpo.bitrate]
+
+    # ── HLS muxer ─────────────────────────────────────────────────────────
+    cmd += ["-f", "hls"]
+    cmd += ["-hls_time", str(rpo.hls_time)]
+    cmd += ["-hls_list_size", str(rpo.hls_list_size)]
+    cmd += ["-hls_flags", rpo.hls_flags]
+    cmd += ["-hls_segment_filename", segment_pattern]
+    cmd.append(playlist_path)
+
+    return cmd
+
+
 def build_ffmpeg_command(config: ChannelConfig) -> list[str]:
     """
     Build a complete FFmpeg recording command as a subprocess argument list.
@@ -397,13 +502,24 @@ def build_ffmpeg_command(config: ChannelConfig) -> list[str]:
 
     Mirrors record_rts1.bat parameter-by-parameter.
 
-    Phase 12: if ``recording_preview_output.enabled`` is True, delegates to
-    :func:`_build_recording_command_with_preview` which uses ``-filter_complex``
-    and a second UDP output instead of a simple ``-vf`` chain.
+    Phase 12: if ``recording_preview_output.enabled`` is True and ``mode`` is
+    ``"udp"`` (default), delegates to :func:`_build_recording_command_with_preview`
+    which uses ``-filter_complex`` and a second UDP output.
+
+    Phase 22: if ``mode`` is ``"hls_direct"``, delegates to
+    :func:`_build_recording_command_with_hls_direct` which writes HLS files
+    directly from the recording process — no second FFmpeg needed.
+    If ``mode`` is ``"disabled"`` the preview output is omitted even when
+    ``enabled=True``.
     """
     rpo = config.recording_preview_output
     if rpo is not None and rpo.enabled:
-        return _build_recording_command_with_preview(config)
+        if rpo.mode == "hls_direct":
+            return _build_recording_command_with_hls_direct(config)
+        elif rpo.mode != "disabled":
+            # "udp" (default) or any unrecognised value → legacy UDP path
+            return _build_recording_command_with_preview(config)
+        # mode == "disabled": fall through to the plain recording command
 
     cap = config.capture
     enc = config.encoding

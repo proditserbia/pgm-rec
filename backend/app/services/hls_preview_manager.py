@@ -357,6 +357,9 @@ class HlsPreviewManager:
         # Needed so the watchdog can perform copy→transcode auto-fallback and
         # build accurate failure messages without re-loading the channel config.
         self._udp_mode_configs: dict[str, ChannelConfig] = {}
+        # Phase 22: channels using hls_direct mode — recording FFmpeg writes HLS
+        # files directly; no separate preview process is started.
+        self._hls_direct_channels: dict[str, ChannelConfig] = {}
 
     # ── Internal helpers ──────────────────────────────────────────────────
 
@@ -547,7 +550,11 @@ class HlsPreviewManager:
     def is_running(self, channel_id: str) -> bool:
         """Return True if a preview process is running OR pending for *channel_id*."""
         self._reap_if_dead(channel_id)
-        return channel_id in self._previews or channel_id in self._pending_file_mode
+        return (
+            channel_id in self._previews
+            or channel_id in self._pending_file_mode
+            or channel_id in self._hls_direct_channels
+        )
 
     def get_pid(self, channel_id: str) -> Optional[int]:
         self._reap_if_dead(channel_id)
@@ -626,6 +633,10 @@ class HlsPreviewManager:
         if input_mode == "from_udp":
             return self._start_from_udp(channel_id, config)
 
+        # ── hls_direct mode (Phase 22) ────────────────────────────────────
+        if input_mode == "hls_direct":
+            return self._start_hls_direct(channel_id, config)
+
         # ── direct_capture mode (original behavior) ───────────────────────
         output_dir = self._output_dir(channel_id)
         self._clean_output_dir(output_dir)
@@ -694,11 +705,17 @@ class HlsPreviewManager:
         self._file_mode_configs.pop(channel_id, None)
         # Phase 17: clear UDP mode config
         self._udp_mode_configs.pop(channel_id, None)
+        # Phase 22: clear hls_direct registration
+        was_hls_direct = channel_id in self._hls_direct_channels
+        self._hls_direct_channels.pop(channel_id, None)
 
         info = self._previews.get(channel_id)
         if info is None:
             if was_pending:
                 logger.info("[hls-preview][%s] Pending preview cancelled.", channel_id)
+                return True
+            if was_hls_direct:
+                logger.info("[hls-preview][%s] hls_direct preview deregistered.", channel_id)
                 return True
             logger.info("[hls-preview][%s] Stop requested but not running.", channel_id)
             return False
@@ -745,6 +762,23 @@ class HlsPreviewManager:
         info = self._previews.get(channel_id)
 
         if info is None:
+            # Phase 22: hls_direct mode — recording process writes HLS directly.
+            if channel_id in self._hls_direct_channels:
+                output_dir = self._output_dir(channel_id)
+                playlist = output_dir / "index.m3u8"
+                ready = _playlist_has_segment(playlist)
+                return {
+                    "running": True,
+                    "pid": None,
+                    "started_at": None,
+                    "playlist_url": self._playlist_api_url(channel_id),
+                    "health": PreviewHealth.HEALTHY if ready else PreviewHealth.UNKNOWN,
+                    "playlist_ready": ready,
+                    "startup_status": "running" if ready else "starting",
+                    "stderr_tail": [],
+                    "failed_reason": None,
+                }
+
             # Phase 10: pending mode (waiting for first segment to appear)
             if channel_id in self._pending_file_mode:
                 return {
@@ -1011,6 +1045,57 @@ class HlsPreviewManager:
             channel_id, process.pid, listen_url, actual_mode,
         )
         return info
+
+    def _start_hls_direct(
+        self, channel_id: str, config: ChannelConfig
+    ) -> None:
+        """
+        Register a channel as using hls_direct preview — Phase 22.
+
+        In hls_direct mode the recording FFmpeg process writes HLS preview
+        files directly to ``data/preview/{channel_id}/``.  No separate FFmpeg
+        process is started here; this method simply validates the configuration,
+        ensures the output directory exists, and registers the channel so that
+        ``is_running()`` / ``preview_status()`` return meaningful results.
+
+        The recording process must be configured with
+        ``recording_preview_output.enabled=True`` and
+        ``recording_preview_output.mode="hls_direct"`` for HLS files to appear.
+
+        Raises:
+          RuntimeError  if ``recording_preview_output`` is not configured or
+                        ``mode`` is not ``"hls_direct"``.
+        """
+        rpo = config.recording_preview_output
+        if rpo is None:
+            raise RuntimeError(
+                f"Preview for channel '{channel_id}' uses input_mode='hls_direct' "
+                "but recording_preview_output is not configured. "
+                "Set recording_preview_output.enabled=True and mode='hls_direct'."
+            )
+        if not rpo.enabled:
+            raise RuntimeError(
+                f"Preview for channel '{channel_id}' uses input_mode='hls_direct' "
+                "but recording_preview_output.enabled=False. "
+                "Set recording_preview_output.enabled=True and mode='hls_direct'."
+            )
+        if rpo.mode != "hls_direct":
+            raise RuntimeError(
+                f"Preview for channel '{channel_id}' uses input_mode='hls_direct' "
+                f"but recording_preview_output.mode='{rpo.mode}' (expected 'hls_direct'). "
+                "Set recording_preview_output.mode='hls_direct' in channel config."
+            )
+
+        output_dir = self._output_dir(channel_id)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        self._hls_direct_channels[channel_id] = config
+        logger.info(
+            "[hls-preview][%s] hls_direct: registered — recording process writes "
+            "HLS directly to %s",
+            channel_id, output_dir,
+        )
+        return None
 
     def _switch_to_newer_file(
         self, channel_id: str, config: ChannelConfig, new_file: Path

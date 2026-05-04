@@ -250,16 +250,21 @@ def test_rts1_build_command_has_no_repeat_headers_flag():
 
 
 def test_rts1_build_command_has_muxdelay():
-    """Full rts1 command build must include -muxdelay 0."""
+    """Phase 19: -muxdelay applies to UDP mode only; rts1 uses hls_direct (no muxdelay).
+    Verify the hls_direct path is taken and -f hls is emitted instead."""
     cfg = _load_rts1()
     cmd = build_ffmpeg_command(cfg)
-    assert "-muxdelay" in cmd
-    assert cmd[cmd.index("-muxdelay") + 1] == "0"
+    # rts1 now uses hls_direct: no -muxdelay, but -f hls must be present
+    assert "-f" in cmd
+    f_indices = [i for i, x in enumerate(cmd) if x == "-f"]
+    formats = [cmd[i + 1] for i in f_indices]
+    assert "hls" in formats
 
 
 def test_rts1_build_command_has_muxpreload():
-    """Full rts1 command build must include -muxpreload 0."""
+    """Phase 19: -muxpreload applies to UDP mode only; rts1 uses hls_direct (no muxpreload).
+    Verify the hls_direct path is taken and -hls_time is emitted instead."""
     cfg = _load_rts1()
     cmd = build_ffmpeg_command(cfg)
-    assert "-muxpreload" in cmd
-    assert cmd[cmd.index("-muxpreload") + 1] == "0"
+    # rts1 now uses hls_direct: no -muxpreload, but -hls_time must be present
+    assert "-hls_time" in cmd
