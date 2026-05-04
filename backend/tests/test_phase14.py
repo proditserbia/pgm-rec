@@ -250,7 +250,7 @@ def test_preview_config_udp_port_per_channel():
     p1 = PreviewConfig(udp_port=23001)
     p2 = PreviewConfig(udp_port=23002)
     p3 = PreviewConfig(udp_port=23003)
-    assert p1.udp_port != p2.udp_port != p3.udp_port
+    assert len({p1.udp_port, p2.udp_port, p3.udp_port}) == 3
 
 
 def test_preview_config_udp_port_round_trip():

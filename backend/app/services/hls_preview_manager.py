@@ -140,10 +140,14 @@ def _check_udp_port_available(host: str, port: int) -> bool:
     ⚠️  TOCTOU: the port may become occupied between this check and FFmpeg
     starting, but the check eliminates the most common case (a leftover
     ffmpeg/ffplay process still holding the socket).
+
+    Note: SO_REUSEADDR is intentionally *not* set so that the test accurately
+    reflects whether another process has an exclusive claim on the port.
+    On Windows, SO_EXCLUSIVEADDRUSE (the default when SO_REUSEADDR is absent)
+    gives the most accurate result.
     """
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((host, port))
         sock.close()
         return True
@@ -759,11 +763,9 @@ class HlsPreviewManager:
             host, port = addr
             if not _check_udp_port_available(host, port):
                 raise RuntimeError(
-                    f"UDP port {port} on {host} is already in use. "
-                    "Another ffmpeg or ffplay process may be holding this port. "
-                    "Stop all processes using this port and retry. "
-                    "Tip: only one UDP listener can bind to a given port at a time — "
-                    "do not run ffplay and HLS preview simultaneously on the same port. "
+                    f"UDP port {port} on {host} is already in use by another process "
+                    "(possibly ffmpeg/ffplay). "
+                    "Stop the conflicting process and retry. "
                     f"(listen_url={listen_url!r})"
                 )
 
