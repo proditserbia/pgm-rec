@@ -54,12 +54,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
+import socket
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from ..config.settings import get_settings, resolve_channel_path
 from ..models.schemas import ChannelConfig, PreviewHealth
@@ -125,6 +127,51 @@ def _safe_mtime(p: Path) -> float:
         return p.stat().st_mtime
     except OSError:
         return 0.0
+
+
+def _check_udp_port_available(host: str, port: int) -> bool:
+    """
+    Return True if the UDP port is available (not already bound by another process).
+
+    Attempts to bind a UDP socket to *host*:*port*; if that succeeds the port
+    is free and the socket is immediately closed.  If binding raises an
+    ``OSError`` (e.g. WSAEADDRINUSE / errno 98) the port is occupied.
+
+    ⚠️  TOCTOU: the port may become occupied between this check and FFmpeg
+    starting, but the check eliminates the most common case (a leftover
+    ffmpeg/ffplay process still holding the socket).
+
+    Note: SO_REUSEADDR is intentionally *not* set so that the test accurately
+    reflects whether another process has an exclusive claim on the port.
+    On Windows, SO_EXCLUSIVEADDRUSE (the default when SO_REUSEADDR is absent)
+    gives the most accurate result.
+    """
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind((host, port))
+        sock.close()
+        return True
+    except OSError:
+        return False
+
+
+def _extract_udp_host_port(url: str) -> Optional[tuple[str, int]]:
+    """
+    Parse a ``udp://host:port[?options]`` URL and return ``(host, port)``.
+
+    Returns ``None`` if the URL cannot be parsed or the port is missing.
+    """
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme != "udp":
+            return None
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port
+        if port is None:
+            return None
+        return (host, port)
+    except Exception:
+        return None
 
 
 def _find_latest_usable_segment(record_dir: Path, chunks_dir: Path) -> Optional[Path]:
@@ -681,6 +728,15 @@ class HlsPreviewManager:
         Reads the low-res MPEG-TS stream produced by ``recording_preview_output``
         inside the recording FFmpeg process and remuxes it to browser HLS.
 
+        Phase 14: performs a preflight UDP port availability check before
+        launching FFmpeg.  If the port is already occupied (e.g. a leftover
+        ffmpeg/ffplay process), a ``RuntimeError`` with a clear message is
+        raised immediately rather than letting FFmpeg fail silently.
+
+        ⚠️  Important: only one process may bind to a given UDP port at a time.
+        Do not run ffplay and HLS preview concurrently on the same port.
+        Stop old ffmpeg/ffplay processes if you get a bind failure.
+
         The process is monitored by the watchdog just like ``direct_capture``:
         - On unexpected exit: marked DOWN (no auto-restart).
         - Startup timeout applies; a failed_reason is recorded if the playlist
@@ -689,6 +745,7 @@ class HlsPreviewManager:
         Raises:
           RuntimeError  if ``recording_preview_output`` is not configured or
                         not enabled in the channel config.
+          RuntimeError  if the UDP listen port is already occupied (preflight).
         """
         rpo = config.recording_preview_output
         if rpo is None or not rpo.enabled:
@@ -698,6 +755,20 @@ class HlsPreviewManager:
                 "Set recording_preview_output.enabled=True and provide a UDP URL."
             )
 
+        # Phase 14 — preflight: check whether the UDP listen port is free.
+        # Use listen_url when available, otherwise fall back to url.
+        listen_url = rpo.listen_url if rpo.listen_url else rpo.url
+        addr = _extract_udp_host_port(listen_url)
+        if addr is not None:
+            host, port = addr
+            if not _check_udp_port_available(host, port):
+                raise RuntimeError(
+                    f"UDP port {port} on {host} is already in use by another process "
+                    "(possibly ffmpeg/ffplay). "
+                    "Stop the conflicting process and retry. "
+                    f"(listen_url={listen_url!r})"
+                )
+
         output_dir = self._output_dir(channel_id)
         self._clean_output_dir(output_dir)
 
@@ -706,13 +777,13 @@ class HlsPreviewManager:
 
         now_iso = utc_now().isoformat()
         with open(log_path, "w", encoding="utf-8") as lf:
-            lf.write(f"[{now_iso}] HLS PREVIEW FROM UDP: {rpo.url}\n")
+            lf.write(f"[{now_iso}] HLS PREVIEW FROM UDP: {listen_url}\n")
             lf.write(f"[{now_iso}] COMMAND: {format_command_for_log(cmd)}\n")
             lf.write(f"[{now_iso}] STARTING\n")
 
         logger.info(
             "[hls-preview][%s] from_udp: starting HLS reader from %s",
-            channel_id, rpo.url,
+            channel_id, listen_url,
         )
 
         log_fh = open(log_path, "ab")
@@ -745,7 +816,7 @@ class HlsPreviewManager:
 
         logger.info(
             "[hls-preview][%s] from_udp: started — PID %d reading %s",
-            channel_id, process.pid, rpo.url,
+            channel_id, process.pid, listen_url,
         )
         return info
 
