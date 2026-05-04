@@ -371,7 +371,7 @@ export default function ChannelDetail() {
                 />
                 {/* Overlay: top-left channel name */}
                 <div className="monitor-overlay-tl">
-                  {summary.display_name.toUpperCase()} LIVE
+                  {(summary?.display_name?.toUpperCase() ?? 'CHANNEL')} LIVE
                 </div>
                 {/* Overlay: top-right resolution/fps */}
                 <div className="monitor-overlay-tr">
