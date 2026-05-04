@@ -249,6 +249,15 @@ class PreviewConfig(BaseModel):
     # This field is informational metadata; the authoritative URLs are
     # recording_preview_output.send_url and recording_preview_output.listen_url.
     udp_port: Optional[int] = None
+    # Phase 17 — HLS generation mode for from_udp input_mode.
+    # "copy"      : remux only (-c:v copy -c:a copy); fastest, no CPU encoding.
+    #               Requires the UDP stream to be H.264+AAC MPEG-TS.
+    # "transcode" : always re-encode to libx264/aac; slower but works with any
+    #               source codec.
+    # "auto"      : try copy first; if no playlist appears within
+    #               preview_startup_timeout_seconds, restart in transcode mode.
+    # Default: "auto"
+    hls_mode: str = "auto"
 
 
 class ChannelConfig(BaseModel):
@@ -450,6 +459,9 @@ class ChannelDiagnosticsResponse(BaseModel):
         'ffmpeg -list_devices true -f dshow -i dummy  '
         '(run on the recording machine)'
     )
+    # Phase 17 — manual diagnostic command for from_udp mode (None for other modes).
+    # Example: 'ffplay "udp://127.0.0.1:23001?overrun_nonfatal=1&fifo_size=50000000"'
+    ffplay_hint: Optional[str] = None
 
 
 # ─── Config reload response ───────────────────────────────────────────────────

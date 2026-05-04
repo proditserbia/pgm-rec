@@ -362,6 +362,17 @@ def get_channel_diagnostics(channel_id: str, db: DbDep, _: AdminDep):
     log_path = pm.get_log_path(channel_id)
     stderr_tail = _tail_file(log_path, lines=100) if log_path else []
 
+    # Phase 17 — for from_udp mode, build an ffplay diagnostic hint.
+    ffplay_hint: str | None = None
+    if getattr(config.preview, "input_mode", "") == "from_udp":
+        rpo = config.recording_preview_output
+        if rpo:
+            udp_url = rpo.listen_url if rpo.listen_url else rpo.url
+            ffplay_hint = (
+                f'ffplay "{udp_url}"  '
+                "(run on the recording machine to verify the UDP stream)"
+            )
+
     return ChannelDiagnosticsResponse(
         channel_id=channel_id,
         ffmpeg_command=cmd_str,
@@ -375,4 +386,5 @@ def get_channel_diagnostics(channel_id: str, db: DbDep, _: AdminDep):
         latest_segment_size_bytes=latest_size,
         latest_segment_mtime=latest_mtime,
         stderr_tail=stderr_tail,
+        ffplay_hint=ffplay_hint,
     )

@@ -79,6 +79,7 @@
     "fps": 5,
     "input_mode": "from_udp",
     "fallback_to_cpu": true,
-    "udp_port": 23001
+    "udp_port": 23001,
+    "hls_mode": "auto"
   }
 }

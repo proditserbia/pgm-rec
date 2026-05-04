@@ -465,8 +465,10 @@ def test_build_hls_preview_from_udp_command_structure(tmp_path):
     assert "-y" in cmd
     assert "-fflags" in cmd
     fflags = cmd[cmd.index("-fflags") + 1]
-    assert "nobuffer" in fflags
+    # Phase 17: +nobuffer removed; +genpts retained; analyzeduration/probesize added
     assert "genpts" in fflags
+    assert "-analyzeduration" in cmd
+    assert "-probesize" in cmd
     assert "-i" in cmd
     assert "udp://127.0.0.1:23001?pkt_size=1316" in cmd
     assert "-c:v" in cmd

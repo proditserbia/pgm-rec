@@ -609,6 +609,8 @@ _HLS_AAC_AUDIO_CODECS = frozenset({
 def build_hls_preview_from_udp_command(
     config: ChannelConfig,
     output_dir: Path,
+    *,
+    mode: str = "copy",
 ) -> list[str]:
     """
     Build an FFmpeg HLS preview command that reads from a UDP stream — Phase 12.
@@ -616,26 +618,39 @@ def build_hls_preview_from_udp_command(
     Used for ``preview.input_mode = "from_udp"``.
 
     The UDP stream is produced by the recording FFmpeg process via
-    ``recording_preview_output``.  Since the stream is already encoded
-    (H.264 video + optional AAC audio), this command simply remuxes
-    MPEG-TS → HLS without re-encoding (``-c:v copy``).
+    ``recording_preview_output``.
 
-    Key properties:
-    - Input: MPEG-TS over UDP (``recording_preview_output.url``)
-    - ``-fflags +nobuffer+genpts``: low-latency flags (do not buffer frames;
-      generate PTS from DTS if missing — guards against incomplete timestamps
-      from some UDP streams)
-    - Video: ``-c:v copy``  (stream already H.264; no re-encode needed)
-    - Audio: ``-c:a copy`` if ``recording_preview_output.audio_enabled``,
-      else ``-an``
-    - Output: HLS muxer writing to output_dir/index.m3u8
+    Parameters
+    ----------
+    config : ChannelConfig
+    output_dir : Path
+    mode : str
+        ``"copy"``      — remux only (``-c:v copy``); fastest.  The stream
+                         must already be H.264 + AAC MPEG-TS.  Codec
+                         compatibility is validated before the command is built.
+        ``"transcode"`` — always re-encode to libx264 / aac regardless of the
+                         source codec; slower but universally compatible.
+
+    Key properties (both modes):
+    - Input: MPEG-TS over UDP (``recording_preview_output.listen_url`` or ``.url``)
+    - ``-fflags +genpts``: generate PTS from DTS if missing
+    - ``-analyzeduration 1000000``, ``-probesize 1000000``: allow FFmpeg enough
+      time to detect codec parameters from the live UDP stream
+    - Output: HLS muxer with ``independent_segments`` flag for seek compatibility
+
+    Copy mode specifics:
+    - ``-c:v copy``, ``-c:a copy``/``-an``
+    - Validates that the configured video codec is H.264-compatible and, when
+      audio is enabled, that the audio codec is AAC-compatible.
+
+    Transcode mode specifics:
+    - ``-c:v libx264 -preset ultrafast -tune zerolatency``
+    - ``-c:a aac -b:a 96k -ar 48000`` (always includes audio)
 
     Raises:
       ValueError  if ``recording_preview_output`` is not configured on the channel.
-      ValueError  if the configured video codec is not H.264-compatible (browser
-                  HLS requires H.264 video for cross-browser playback).
-      ValueError  if audio is enabled and the configured audio codec is not AAC
-                  (browser HLS requires AAC audio for cross-browser playback).
+      ValueError  (copy mode only) if the configured video codec is not
+                  H.264-compatible, or if audio is enabled with a non-AAC codec.
 
     Safe for ``subprocess.Popen(cmd, shell=False)``.
     Never pass the result to a shell — it is not shell-escaped.
@@ -648,28 +663,26 @@ def build_hls_preview_from_udp_command(
             "recording_preview_output.enabled=True and provide a UDP URL."
         )
 
-    # ── Browser HLS codec compatibility check ─────────────────────────────────
-    # HLS served to browsers must use H.264 video; all other codecs (e.g. mpeg4,
-    # hevc, vp9) are either unsupported or require MSE extensions not universally
-    # available.  Reject non-H.264 early with a clear message rather than
-    # producing a stream that silently fails to play.
-    if rpo.video_codec not in _HLS_H264_VIDEO_CODECS:
-        raise ValueError(
-            f"build_hls_preview_from_udp_command: channel '{config.id}' uses "
-            f"video_codec='{rpo.video_codec}' which is not H.264-compatible. "
-            "Browser HLS requires H.264 video (e.g. libx264 or h264_nvenc). "
-            "Set recording_preview_output.video_codec to a supported H.264 encoder."
-        )
+    # ── Browser HLS codec compatibility check (copy mode only) ───────────────
+    # In transcode mode we always encode to libx264/aac, so the source codec
+    # is irrelevant.  In copy mode the stream is passed through as-is and must
+    # be H.264/AAC for cross-browser HLS playback.
+    if mode == "copy":
+        if rpo.video_codec not in _HLS_H264_VIDEO_CODECS:
+            raise ValueError(
+                f"build_hls_preview_from_udp_command: channel '{config.id}' uses "
+                f"video_codec='{rpo.video_codec}' which is not H.264-compatible. "
+                "Browser HLS requires H.264 video (e.g. libx264 or h264_nvenc). "
+                "Set recording_preview_output.video_codec to a supported H.264 encoder."
+            )
 
-    # Audio codec must be AAC when audio is enabled (MP3, Opus, etc. are not
-    # reliably supported in HLS by all browsers).
-    if rpo.audio_enabled and rpo.audio_codec not in _HLS_AAC_AUDIO_CODECS:
-        raise ValueError(
-            f"build_hls_preview_from_udp_command: channel '{config.id}' uses "
-            f"audio_codec='{rpo.audio_codec}' which is not AAC-compatible. "
-            "Browser HLS requires AAC audio. "
-            "Set recording_preview_output.audio_codec to 'aac'."
-        )
+        if rpo.audio_enabled and rpo.audio_codec not in _HLS_AAC_AUDIO_CODECS:
+            raise ValueError(
+                f"build_hls_preview_from_udp_command: channel '{config.id}' uses "
+                f"audio_codec='{rpo.audio_codec}' which is not AAC-compatible. "
+                "Browser HLS requires AAC audio. "
+                "Set recording_preview_output.audio_codec to 'aac'."
+            )
 
     preview = config.preview
     playlist_path = str(output_dir / "index.m3u8")
@@ -680,34 +693,42 @@ def build_hls_preview_from_udp_command(
     # ── Suppress interactive prompts ───────────────────────────────────────
     cmd += ["-y"]
 
-    # ── Low-latency input flags ────────────────────────────────────────────
-    # +nobuffer : read packets immediately without buffering
-    # +genpts   : generate PTS from DTS when PTS is missing (common in UDP)
-    cmd += ["-fflags", "+nobuffer+genpts"]
+    # ── Input flags ────────────────────────────────────────────────────────
+    # +genpts         : generate PTS from DTS when PTS is missing (common in UDP)
+    # analyzeduration : allow FFmpeg enough time to probe a live UDP stream
+    # probesize       : amount of data read during probing (bytes)
+    cmd += ["-fflags", "+genpts"]
+    cmd += ["-analyzeduration", "1000000"]
+    cmd += ["-probesize", "1000000"]
 
     # ── UDP input ──────────────────────────────────────────────────────────
     # Phase 14: use listen_url when set; fall back to legacy url field.
-    # The listener URL should include receive-side options such as
-    # overrun_nonfatal=1&fifo_size=50000000.  Using a distinct URL from the
-    # sender avoids the Windows "bind failed: Error -10048" error that occurs
-    # when both sides share the same URL object with sender-only options.
     input_url = rpo.listen_url if rpo.listen_url else rpo.url
     cmd += ["-i", input_url]
 
-    # ── Video: copy H.264 stream (already encoded by recording process) ────
-    cmd += ["-c:v", "copy"]
-
-    # ── Audio ──────────────────────────────────────────────────────────────
-    if rpo.audio_enabled:
-        cmd += ["-c:a", "copy"]
+    # ── Video & Audio encoding ─────────────────────────────────────────────
+    if mode == "copy":
+        # Remux only — stream is already H.264; no re-encode needed.
+        cmd += ["-c:v", "copy"]
+        if rpo.audio_enabled:
+            cmd += ["-c:a", "copy"]
+        else:
+            cmd += ["-an"]
     else:
-        cmd += ["-an"]
+        # Transcode mode — re-encode regardless of source codec.
+        cmd += ["-c:v", "libx264"]
+        cmd += ["-preset", "ultrafast"]
+        cmd += ["-tune", "zerolatency"]
+        cmd += ["-c:a", "aac"]
+        cmd += ["-b:a", "96k"]
+        cmd += ["-ar", "48000"]
 
     # ── HLS muxer ─────────────────────────────────────────────────────────
     cmd += ["-f", "hls"]
     cmd += ["-hls_time", str(preview.segment_time)]
     cmd += ["-hls_list_size", str(preview.list_size)]
-    cmd += ["-hls_flags", "delete_segments+append_list"]
+    # independent_segments: each segment starts with a keyframe for seekability
+    cmd += ["-hls_flags", "delete_segments+append_list+independent_segments"]
     cmd += ["-hls_segment_filename", segment_pattern]
 
     # ── Output playlist ────────────────────────────────────────────────────
