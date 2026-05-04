@@ -90,14 +90,11 @@ export default function HlsPlayer({ channelId, onReady, onError }: Props) {
   }, [channelId, playlistUrl])
 
   return (
-    <div style={{ position: 'relative', background: '#111', borderRadius: 6, overflow: 'hidden' }}>
+    <div className="monitor-viewport-ratio">
       {status === 'loading' && (
-        <div style={{
-          position: 'absolute', inset: 0, display: 'flex',
-          alignItems: 'center', justifyContent: 'center',
-          color: '#aaa', fontSize: 13,
-        }}>
-          Buffering…
+        <div className="monitor-state-screen state-starting">
+          <div className="monitor-spinner" />
+          <span>Buffering…</span>
         </div>
       )}
       <video
@@ -105,7 +102,6 @@ export default function HlsPlayer({ channelId, onReady, onError }: Props) {
         muted
         playsInline
         controls
-        style={{ width: '100%', display: 'block', maxHeight: 270 }}
       />
     </div>
   )

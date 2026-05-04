@@ -44,7 +44,7 @@ export interface PreviewConfig {
   encoder: string
   segment_time: number
   list_size: number
-  input_mode: 'direct_capture' | 'from_recording_output' | 'from_udp' | 'disabled'
+  input_mode: 'direct_capture' | 'from_recording_output' | 'from_udp' | 'hls_direct' | 'disabled'
   fallback_to_cpu: boolean
   hls_mode: 'copy' | 'transcode' | 'auto'
 }
