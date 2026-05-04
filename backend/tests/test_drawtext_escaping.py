@@ -154,7 +154,7 @@ def test_build_drawtext_filter_complex_full_text_value():
 # build_ffmpeg_command — single-output -vf path
 # ---------------------------------------------------------------------------
 
-def test_build_ffmpeg_command_vf_drawtext_plain_colon(tmp_path):
+def test_build_ffmpeg_command_vf_drawtext_plain_colon():
     """Single-output command uses -vf with unescaped colons in the time format."""
     cfg = _config_with_overlay(rpo_enabled=False)
     with patch("app.services.ffmpeg_builder.platform.system", return_value="Linux"):
@@ -170,7 +170,7 @@ def test_build_ffmpeg_command_vf_drawtext_plain_colon(tmp_path):
 # build_ffmpeg_command — filter_complex path (dual-output / preview)
 # ---------------------------------------------------------------------------
 
-def test_build_ffmpeg_command_filter_complex_escapes_colons(tmp_path):
+def test_build_ffmpeg_command_filter_complex_escapes_colons():
     """filter_complex command has \\: for colons in localtime format."""
     cfg = _config_with_overlay(rpo_enabled=True)
     with patch("app.services.ffmpeg_builder.platform.system", return_value="Linux"):
@@ -198,9 +198,12 @@ def test_build_filter_complex_contains_time_format_escaped_colons():
 
 
 def test_build_filter_complex_no_plain_colon_in_localtime():
-    """In filter_complex mode there must be no un-escaped colon in the localtime macro."""
+    """In filter_complex mode the localtime macro colon must always be escaped."""
+    import re
     cfg = _config_with_overlay(rpo_enabled=True)
     with patch("app.services.ffmpeg_builder.platform.system", return_value="Linux"):
         fc = _build_filter_complex_with_preview(cfg)
-    # The only 'localtime:' pattern allowed is the escaped form
-    assert "localtime:" not in fc.replace(r"localtime\:", "")
+    # An un-escaped localtime colon would match "localtime:" not preceded by "\"
+    assert not re.search(r"(?<!\\)localtime:", fc), (
+        f"Found un-escaped 'localtime:' in filter_complex string: {fc!r}"
+    )
