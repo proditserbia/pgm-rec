@@ -268,99 +268,138 @@ export default function ChannelDetail() {
         </div>
       </div>
 
-      {/* ── HLS Preview ──────────────────────────────────────────────────── */}
-      <div className="card">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-          <span className="card-title" style={{ marginBottom: 0 }}>Live Preview</span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{
-              fontSize: 12, fontWeight: 600,
-              color: previewStartupStatus === 'running' ? '#2e7d32'
-                   : previewStartupStatus === 'failed'  ? '#c62828'
-                   : previewStartupStatus === 'starting' ? '#e65100'
-                   : '#666',
-            }}>
-              {previewStartupStatus === 'running'  ? '● Running'  :
-               previewStartupStatus === 'starting' ? '◌ Starting…' :
-               previewStartupStatus === 'failed'   ? '✕ Failed'   : '○ Stopped'}
+      {/* ── HLS Preview — broadcast monitor ──────────────────────────────── */}
+      <div className="monitor-card">
+        {/* Title bar */}
+        <div className="monitor-titlebar">
+          <div className={`monitor-live-dot dot-${previewStartupStatus}`} />
+          <span className="monitor-title">Live Preview</span>
+          {previewStartupStatus === 'running' && (
+            <span className="monitor-live-label label-running">LIVE</span>
+          )}
+          {previewStartupStatus === 'starting' && (
+            <span className="monitor-live-label label-starting">STARTING</span>
+          )}
+          {previewStartupStatus === 'failed' && (
+            <span className="monitor-live-label label-failed">FAILED</span>
+          )}
+          {previewStatus && previewRunning && (
+            <span className="monitor-status-text">
+              · Health: {previewStatus.health}
             </span>
-            {isAdmin && (
-              <>
-                {!previewRunning ? (
-                  <button
-                    className="btn btn-success btn-sm"
-                    disabled={previewBusy}
-                    onClick={handleStartPreview}
-                  >
-                    Start Preview
-                  </button>
-                ) : (
-                  <button
-                    className="btn btn-danger btn-sm"
-                    disabled={previewBusy}
-                    onClick={handleStopPreview}
-                  >
-                    Stop Preview
-                  </button>
+          )}
+          <span className="monitor-titlebar-spacer" />
+          {previewError && (
+            <span style={{ fontSize: 11, color: '#ef4444', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {previewError}
+            </span>
+          )}
+          {isAdmin && (
+            previewRunning ? (
+              <button
+                className="btn btn-danger btn-sm"
+                disabled={previewBusy}
+                onClick={handleStopPreview}
+              >
+                ■ Stop Preview
+              </button>
+            ) : (
+              <button
+                className="btn btn-success btn-sm"
+                disabled={previewBusy}
+                onClick={handleStartPreview}
+              >
+                ▶ Start Preview
+              </button>
+            )
+          )}
+        </div>
+
+        {/* Monitor viewport */}
+        <div className="monitor-viewport">
+          <div className="monitor-viewport-ratio">
+
+            {/* State: stopped */}
+            {previewStartupStatus === 'stopped' && (
+              <div className="monitor-state-screen">
+                <span style={{ fontSize: 28, opacity: 0.25 }}>▶</span>
+                <span>{isAdmin ? 'Preview stopped · click Start Preview' : 'Preview is not running'}</span>
+              </div>
+            )}
+
+            {/* State: starting */}
+            {previewStartupStatus === 'starting' && (
+              <div className="monitor-state-screen state-starting">
+                <div className="monitor-spinner" />
+                <span>Starting preview…</span>
+                <span className="monitor-state-hint">Waiting for first HLS segment</span>
+              </div>
+            )}
+
+            {/* State: failed */}
+            {previewStartupStatus === 'failed' && (
+              <div className="monitor-state-screen state-error">
+                <span style={{ fontSize: 24 }}>✕</span>
+                <span>Preview failed</span>
+                {previewStatus?.failed_reason && (
+                  <span className="monitor-state-hint" style={{ color: '#ef4444', maxWidth: 400, textAlign: 'center' }}>
+                    {previewStatus.failed_reason}
+                  </span>
                 )}
+              </div>
+            )}
+
+            {/* State: ready but player not opened yet */}
+            {previewReady && !showPlayer && (
+              <div className="monitor-state-screen">
+                <span style={{ fontSize: 28, opacity: 0.3 }}>▶</span>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => setShowPlayer(true)}
+                >
+                  ▶ Open Player
+                </button>
+              </div>
+            )}
+
+            {/* Player */}
+            {previewReady && showPlayer && id && (
+              <>
+                <HlsPlayer
+                  channelId={id}
+                  onError={msg => setPreviewError(msg)}
+                />
+                {/* Overlay: top-left channel name */}
+                <div className="monitor-overlay-tl">
+                  {(summary?.display_name?.toUpperCase() ?? 'CHANNEL')} LIVE
+                </div>
+                {/* Overlay: top-right resolution/fps */}
+                <div className="monitor-overlay-tr">
+                  {config.preview.width}×{config.preview.height} / {config.preview.hls_fps}fps
+                </div>
+                {/* Overlay: bottom-left mode + health */}
+                <div className="monitor-overlay-bl">
+                  {config.preview.input_mode === 'hls_direct' ? 'HLS Direct'
+                    : config.preview.input_mode === 'from_udp' ? 'UDP→HLS'
+                    : config.preview.input_mode === 'from_recording_output' ? 'Rec→HLS'
+                    : config.preview.input_mode}
+                  {previewStatus && ` · ${previewStatus.health}`}
+                </div>
               </>
             )}
           </div>
         </div>
 
-        {previewError && <ErrorBanner message={previewError} />}
-
-        {/* Starting: waiting for playlist */}
-        {previewStartupStatus === 'starting' && (
-          <div style={{ textAlign: 'center', padding: '16px 0', color: '#e65100', fontSize: 13 }}>
-            Starting preview… waiting for first HLS segment.
-            <br />
-            <span style={{ color: '#888', fontSize: 12 }}>
-              (If this takes longer than 30 seconds, check preview logs below.)
+        {/* Status bar */}
+        {previewRunning && previewStatus && (
+          <div className="monitor-statusbar">
+            <span>PID {previewStatus.pid}</span>
+            <span className="monitor-statusbar-sep">·</span>
+            <span>{config.preview.input_mode}</span>
+            <span className="monitor-statusbar-sep">·</span>
+            <span style={{ color: previewStatus.health === 'healthy' ? '#22c55e' : previewStatus.health === 'down' ? '#ef4444' : '#aaa' }}>
+              {previewStatus.health}
             </span>
-          </div>
-        )}
-
-        {/* Failed */}
-        {previewStartupStatus === 'failed' && previewStatus?.failed_reason && (
-          <div style={{
-            background: '#fff3f3', border: '1px solid #f5c0c0', borderRadius: 4,
-            padding: '8px 12px', fontSize: 12, color: '#c62828', marginBottom: 8,
-          }}>
-            <strong>Preview failed:</strong> {previewStatus.failed_reason}
-          </div>
-        )}
-
-        {/* Ready: show "Open Player" button or actual player */}
-        {previewReady && !showPlayer && (
-          <div style={{ textAlign: 'center', padding: '16px 0' }}>
-            <button
-              className="btn btn-secondary btn-sm"
-              onClick={() => setShowPlayer(true)}
-            >
-              ▶ Open Player
-            </button>
-          </div>
-        )}
-
-        {previewReady && showPlayer && id && (
-          <HlsPlayer
-            channelId={id}
-            onError={msg => setPreviewError(msg)}
-          />
-        )}
-
-        {previewStartupStatus === 'stopped' && (
-          <p className="empty-state" style={{ marginBottom: 0 }}>
-            {isAdmin
-              ? 'Preview is not running. Click "Start Preview" to begin.'
-              : 'Preview is not running.'}
-          </p>
-        )}
-
-        {previewStatus && previewRunning && (
-          <div style={{ marginTop: 8, fontSize: 12, color: '#888' }}>
-            PID {previewStatus.pid} &nbsp;·&nbsp; Health: {previewStatus.health}
           </div>
         )}
       </div>
