@@ -4,7 +4,7 @@ import {
   getChannel, startChannel, stopChannel, restartChannel,
   getChannelLogs, getChannelCommand, getChannelWatchdog, getChannelAnomalies,
   startPreview, stopPreview, getPreviewStatus,
-  getPreviewLogs, getChannelDiagnostics, reloadChannelConfig,
+  getChannelDiagnostics, reloadChannelConfig,
 } from '../api/client'
 import type {
   ChannelDetailResponse, WatchdogEventResponse, SegmentAnomalyResponse,
@@ -58,10 +58,6 @@ export default function ChannelDetail() {
   const [previewBusy, setPreviewBusy] = useState(false)
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [showPlayer, setShowPlayer] = useState(false)
-
-  // Phase 9: preview log tail (admin only, on-demand)
-  const [previewLogs, setPreviewLogs] = useState<string[]>([])
-  const [previewLogsOpen, setPreviewLogsOpen] = useState(false)
 
   // Phase 9: channel diagnostics (admin only, on-demand)
   const [diagnostics, setDiagnostics] = useState<ChannelDiagnosticsResponse | null>(null)
@@ -156,15 +152,6 @@ export default function ChannelDetail() {
     } catch (e) {
       setPreviewError(e instanceof Error ? e.message : 'Failed to stop preview')
     } finally { setPreviewBusy(false) }
-  }
-
-  async function handleLoadPreviewLogs() {
-    if (!id) return
-    try {
-      const r = await getPreviewLogs(id, 100)
-      setPreviewLogs(r.lines)
-      setPreviewLogsOpen(true)
-    } catch { /* ignore */ }
   }
 
   async function handleLoadDiagnostics() {
@@ -403,38 +390,6 @@ export default function ChannelDetail() {
           </div>
         )}
       </div>
-
-      {/* ── Preview Logs (admin) ──────────────────────────────────────────── */}
-      {isAdmin && (previewRunning || previewStartupStatus === 'failed') && (
-      <div className="card">
-        <div
-          className="collapsible-header"
-          onClick={() => {
-            if (!previewLogsOpen) handleLoadPreviewLogs()
-            setPreviewLogsOpen(o => !o)
-          }}
-        >
-          <span>{previewLogsOpen ? '▾' : '▸'}</span> Preview FFmpeg Log Tail
-        </div>
-        {previewLogsOpen && (
-          <>
-            <button
-              className="btn btn-sm btn-secondary"
-              style={{ margin: '6px 0' }}
-              onClick={handleLoadPreviewLogs}
-            >
-              ↻ Refresh
-            </button>
-            {previewLogs.length === 0
-              ? <p className="empty-state">No preview log lines available.</p>
-              : <pre className="log-block" style={{ marginTop: 6, maxHeight: 300 }}>
-                  {previewLogs.map((l, i) => <div key={i}>{l || ' '}</div>)}
-                </pre>
-            }
-          </>
-        )}
-      </div>
-      )}
 
       {/* Config */}
       <div className="card">
