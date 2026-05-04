@@ -259,6 +259,8 @@ class HlsPreviewInfo:
     input_mode: str = field(default="direct_capture")
     # Path to the segment file currently being looped (from_recording_output only)
     source_file: Optional[Path] = field(default=None)
+    # Phase 17 — HLS encoding mode used for from_udp ("copy" or "transcode")
+    hls_mode_used: Optional[str] = field(default=None)
 
     def is_alive(self) -> bool:
         return self.process.poll() is None
@@ -300,6 +302,10 @@ class HlsPreviewManager:
         # _file_mode_configs: channel_id → config for running file-based previews
         #   (needed so the watchdog can find newer segments and restart).
         self._file_mode_configs: dict[str, ChannelConfig] = {}
+        # Phase 17: config store for running UDP-based previews.
+        # Needed so the watchdog can perform copy→transcode auto-fallback and
+        # build accurate failure messages without re-loading the channel config.
+        self._udp_mode_configs: dict[str, ChannelConfig] = {}
 
     # ── Internal helpers ──────────────────────────────────────────────────
 
@@ -331,12 +337,33 @@ class HlsPreviewManager:
             rc = info.process.poll()
             if not _playlist_has_segment(playlist):
                 # Process died before producing a usable playlist — record failure.
-                tail = _tail_file(info.log_path, 20)
-                reason = (
-                    f"FFmpeg exited (code={rc}) before playlist was ready."
-                )
-                if tail:
-                    reason += " Last stderr: " + " | ".join(tail[-3:])
+                if info.input_mode == "from_udp":
+                    # Use 300 lines and no dshow/Decklink hints for UDP mode.
+                    tail = _tail_file(info.log_path, 300)
+                    config = self._udp_mode_configs.get(channel_id)
+                    listen_url = ""
+                    if config and config.recording_preview_output:
+                        rpo = config.recording_preview_output
+                        listen_url = rpo.listen_url if rpo.listen_url else rpo.url
+                    mode_label = info.hls_mode_used or "unknown"
+                    reason = (
+                        f"UDP HLS FFmpeg exited (code={rc}) before playlist was ready. "
+                        f"Mode: {mode_label}. "
+                    )
+                    if listen_url:
+                        reason += f"UDP URL: {listen_url}. "
+                    reason += (
+                        "Check: confirm recording is running and the UDP stream is active."
+                    )
+                    if tail:
+                        reason += " Last stderr: " + " | ".join(tail[-5:])
+                else:
+                    tail = _tail_file(info.log_path, 20)
+                    reason = (
+                        f"FFmpeg exited (code={rc}) before playlist was ready."
+                    )
+                    if tail:
+                        reason += " Last stderr: " + " | ".join(tail[-3:])
                 self._failures[channel_id] = HlsPreviewFailure(
                     reason=reason,
                     log_path=info.log_path,
@@ -357,6 +384,13 @@ class HlsPreviewManager:
         """
         Mark a preview as failed if it has been running longer than
         preview_startup_timeout_seconds without producing a usable playlist.
+
+        Phase 17:
+        - For from_udp + copy + auto mode: instead of failing, kill the copy
+          process and retry with transcode mode.
+        - For from_udp (all final failures): use UDP-appropriate failure message
+          (no dshow/Decklink hints); include last 300 stderr lines.
+        - For direct_capture: original behavior with dshow hints.
         """
         info = self._previews.get(channel_id)
         if info is None:
@@ -364,7 +398,70 @@ class HlsPreviewManager:
         timeout = get_settings().preview_startup_timeout_seconds
         elapsed = (utc_now() - info.started_at).total_seconds()
         playlist = info.output_dir / "index.m3u8"
-        if elapsed > timeout and not _playlist_has_segment(playlist):
+        if elapsed <= timeout or _playlist_has_segment(playlist):
+            return
+
+        # ── Timeout reached, no playlist ──────────────────────────────────
+        if info.input_mode == "from_udp":
+            config = self._udp_mode_configs.get(channel_id)
+            hls_mode = getattr(config.preview, "hls_mode", "auto") if config else "auto"
+
+            # Auto-fallback: if copy mode timed out, retry with transcode.
+            if hls_mode == "auto" and info.hls_mode_used == "copy":
+                logger.warning(
+                    "[hls-preview][%s] UDP copy mode timed out after %ds — "
+                    "retrying in transcode mode.",
+                    channel_id, timeout,
+                )
+                try:
+                    info.process.kill()
+                    info.process.wait(timeout=5)
+                except Exception:
+                    pass
+                del self._previews[channel_id]
+                if config:
+                    try:
+                        self._start_from_udp(channel_id, config, _force_mode="transcode")
+                    except Exception as exc:
+                        logger.error(
+                            "[hls-preview][%s] from_udp transcode fallback failed: %s",
+                            channel_id, exc,
+                        )
+                        self._failures[channel_id] = HlsPreviewFailure(
+                            reason=f"UDP transcode fallback failed: {exc}",
+                            log_path=info.log_path,
+                            failed_at=utc_now(),
+                        )
+                return
+
+            # Definitive failure — build UDP-specific message.
+            tail = _tail_file(info.log_path, 300)
+            listen_url = ""
+            if config and config.recording_preview_output:
+                rpo = config.recording_preview_output
+                listen_url = rpo.listen_url if rpo.listen_url else rpo.url
+            mode_label = info.hls_mode_used or "unknown"
+            reason = (
+                f"UDP HLS preview timed out after {timeout}s — no playlist produced. "
+                f"Mode: {mode_label}. "
+            )
+            if listen_url:
+                reason += f"UDP URL: {listen_url}. "
+                reason += (
+                    f"Manual diagnostic: "
+                    f'ffplay "{listen_url}"  '
+                    f"(run on the recording machine). "
+                )
+            reason += (
+                "Check: (1) confirm recording is running with "
+                "recording_preview_output.enabled=True, "
+                "(2) verify the UDP stream is reachable with ffplay, "
+                "(3) check preview log for FFmpeg errors."
+            )
+            if tail:
+                reason += " Last stderr: " + " | ".join(tail[-5:])
+        else:
+            # direct_capture: original message with dshow/Decklink hints.
             tail = _tail_file(info.log_path, 20)
             reason = (
                 f"Preview timed out after {timeout}s — no playlist produced. "
@@ -376,22 +473,23 @@ class HlsPreviewManager:
             )
             if tail:
                 reason += " Last stderr: " + " | ".join(tail[-3:])
-            self._failures[channel_id] = HlsPreviewFailure(
-                reason=reason,
-                log_path=info.log_path,
-                failed_at=utc_now(),
-            )
-            logger.warning(
-                "[hls-preview][%s] Startup timeout — stopping preview PID %d.",
-                channel_id, info.pid,
-            )
-            # Kill the process and remove it
-            try:
-                info.process.kill()
-                info.process.wait(timeout=5)
-            except Exception:
-                pass
-            del self._previews[channel_id]
+
+        self._failures[channel_id] = HlsPreviewFailure(
+            reason=reason,
+            log_path=info.log_path,
+            failed_at=utc_now(),
+        )
+        logger.warning(
+            "[hls-preview][%s] Startup timeout — stopping preview PID %d.",
+            channel_id, info.pid,
+        )
+        # Kill the process and remove it
+        try:
+            info.process.kill()
+            info.process.wait(timeout=5)
+        except Exception:
+            pass
+        del self._previews[channel_id]
 
     # ── Public interface ──────────────────────────────────────────────────
 
@@ -543,6 +641,8 @@ class HlsPreviewManager:
         was_pending = channel_id in self._pending_file_mode
         self._pending_file_mode.pop(channel_id, None)
         self._file_mode_configs.pop(channel_id, None)
+        # Phase 17: clear UDP mode config
+        self._udp_mode_configs.pop(channel_id, None)
 
         info = self._previews.get(channel_id)
         if info is None:
@@ -720,7 +820,7 @@ class HlsPreviewManager:
         return info
 
     def _start_from_udp(
-        self, channel_id: str, config: ChannelConfig
+        self, channel_id: str, config: ChannelConfig, _force_mode: Optional[str] = None
     ) -> HlsPreviewInfo:
         """
         Start a UDP-input HLS preview process for *channel_id* — Phase 12.
@@ -732,6 +832,15 @@ class HlsPreviewManager:
         launching FFmpeg.  If the port is already occupied (e.g. a leftover
         ffmpeg/ffplay process), a ``RuntimeError`` with a clear message is
         raised immediately rather than letting FFmpeg fail silently.
+
+        Phase 17: respects ``preview.hls_mode``:
+        - ``"copy"``      — always use copy mode.
+        - ``"transcode"`` — always use transcode mode.
+        - ``"auto"``      — start with copy; the watchdog will restart in
+                            transcode mode if no playlist appears within timeout.
+
+        *_force_mode* overrides ``preview.hls_mode`` and is used internally by
+        the watchdog for the copy→transcode auto-fallback.
 
         ⚠️  Important: only one process may bind to a given UDP port at a time.
         Do not run ffplay and HLS preview concurrently on the same port.
@@ -769,21 +878,30 @@ class HlsPreviewManager:
                     f"(listen_url={listen_url!r})"
                 )
 
+        # Phase 17 — determine the HLS encoding mode to use.
+        if _force_mode is not None:
+            actual_mode = _force_mode
+        else:
+            hls_mode = getattr(config.preview, "hls_mode", "auto")
+            # "auto" starts with copy; watchdog will switch to transcode on timeout.
+            actual_mode = "transcode" if hls_mode == "transcode" else "copy"
+
         output_dir = self._output_dir(channel_id)
         self._clean_output_dir(output_dir)
 
-        cmd = build_hls_preview_from_udp_command(config, output_dir)
+        cmd = build_hls_preview_from_udp_command(config, output_dir, mode=actual_mode)
         log_path = self._new_log_path(channel_id)
 
         now_iso = utc_now().isoformat()
         with open(log_path, "w", encoding="utf-8") as lf:
             lf.write(f"[{now_iso}] HLS PREVIEW FROM UDP: {listen_url}\n")
+            lf.write(f"[{now_iso}] MODE: {actual_mode}\n")
             lf.write(f"[{now_iso}] COMMAND: {format_command_for_log(cmd)}\n")
             lf.write(f"[{now_iso}] STARTING\n")
 
         logger.info(
-            "[hls-preview][%s] from_udp: starting HLS reader from %s",
-            channel_id, listen_url,
+            "[hls-preview][%s] from_udp: starting HLS reader from %s (mode=%s)",
+            channel_id, listen_url, actual_mode,
         )
 
         log_fh = open(log_path, "ab")
@@ -811,12 +929,15 @@ class HlsPreviewManager:
             process=process,
             health=PreviewHealth.HEALTHY,
             input_mode="from_udp",
+            hls_mode_used=actual_mode,
         )
         self._previews[channel_id] = info
+        # Store config for watchdog fallback logic and failure message building.
+        self._udp_mode_configs[channel_id] = config
 
         logger.info(
-            "[hls-preview][%s] from_udp: started — PID %d reading %s",
-            channel_id, process.pid, listen_url,
+            "[hls-preview][%s] from_udp: started — PID %d reading %s (mode=%s)",
+            channel_id, process.pid, listen_url, actual_mode,
         )
         return info
 

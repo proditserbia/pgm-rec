@@ -46,6 +46,7 @@ export interface PreviewConfig {
   list_size: number
   input_mode: 'direct_capture' | 'from_recording_output' | 'from_udp' | 'disabled'
   fallback_to_cpu: boolean
+  hls_mode: 'copy' | 'transcode' | 'auto'
 }
 
 export interface RecordingPreviewOutputConfig {
@@ -213,6 +214,8 @@ export interface ChannelDiagnosticsResponse {
   latest_segment_mtime: string | null
   stderr_tail: string[]
   dshow_device_hint: string
+  // Phase 17 — manual diagnostic command for from_udp mode
+  ffplay_hint: string | null
 }
 
 // ── Auth — Phase 4 ───────────────────────────────────────────────────────────

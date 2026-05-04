@@ -413,6 +413,14 @@ export default function ChannelDetail() {
             {config.preview.input_mode}
           </span>
         </div>
+        {config.preview.input_mode === 'from_udp' && (
+          <div className="card-row">
+            <span className="card-label">HLS mode</span>
+            <span className="card-value" style={{ fontFamily: 'monospace', fontSize: 12 }}>
+              {config.preview.hls_mode ?? 'auto'}
+            </span>
+          </div>
+        )}
         {config.recording_preview_output && (
           <>
             <div className="card-row">
@@ -579,8 +587,17 @@ export default function ChannelDetail() {
               <span className="card-value">{diagnostics.latest_segment_mtime ? fmtDate(diagnostics.latest_segment_mtime) : '—'}</span>
             </div>
             <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
-              <strong>Device listing hint (run on recording machine):</strong>
-              <pre className="log-block" style={{ marginTop: 4, maxHeight: 60 }}>{diagnostics.dshow_device_hint}</pre>
+              {diagnostics.ffplay_hint ? (
+                <>
+                  <strong>UDP stream diagnostic (run on recording machine):</strong>
+                  <pre className="log-block" style={{ marginTop: 4, maxHeight: 60 }}>{diagnostics.ffplay_hint}</pre>
+                </>
+              ) : (
+                <>
+                  <strong>Device listing hint (run on recording machine):</strong>
+                  <pre className="log-block" style={{ marginTop: 4, maxHeight: 60 }}>{diagnostics.dshow_device_hint}</pre>
+                </>
+              )}
             </div>
             <div style={{ marginTop: 8, fontSize: 12, fontWeight: 600, color: '#444' }}>FFmpeg command:</div>
             <pre className="log-block" style={{ maxHeight: 120, marginTop: 4 }}>{diagnostics.ffmpeg_command}</pre>
