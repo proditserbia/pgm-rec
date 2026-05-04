@@ -2,10 +2,10 @@
  * HlsPlayer — Phase 5.
  *
  * Plays an HLS stream served by the PGMRec backend.
- * Uses hls.js in Chromium/Firefox; falls back to native HLS for Safari.
- *
- * The JWT token is injected into every XHR request via hls.js's xhrSetup
- * callback so that auth-protected endpoints work transparently.
+ * Prefers hls.js (Chrome/Edge/Firefox) so that the Bearer token can be
+ * injected into every XHR request.  Falls back to native HLS only on Safari
+ * (where hls.js / MSE is unavailable), with a warning that auth-protected
+ * streams may not work without cookies.
  */
 import { useEffect, useRef, useState } from 'react'
 import Hls from 'hls.js'
@@ -23,6 +23,7 @@ export default function HlsPlayer({ channelId, onReady, onError }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const hlsRef = useRef<Hls | null>(null)
   const [status, setStatus] = useState<'loading' | 'playing' | 'error'>('loading')
+  const [safariWarning, setSafariWarning] = useState(false)
 
   const playlistUrl = `${BASE}/api/v1/channels/${channelId}/preview/playlist.m3u8`
 
@@ -38,13 +39,13 @@ export default function HlsPlayer({ channelId, onReady, onError }: Props) {
     }
 
     if (Hls.isSupported()) {
+      // Chrome / Edge / Firefox — inject Bearer token on every XHR
       const hls = new Hls({
-        // Inject Bearer token on every XHR (playlist + segments)
         xhrSetup(xhr) {
           const token = getToken()
           if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
         },
-        // Aggressive low-latency tuning for live preview
+        // Low-latency tuning for live preview
         liveSyncDurationCount: 2,
         liveMaxLatencyDurationCount: 5,
         maxBufferLength: 10,
@@ -70,7 +71,8 @@ export default function HlsPlayer({ channelId, onReady, onError }: Props) {
         }
       })
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      // Safari native HLS — cannot inject headers, but Safari handles cookies
+      // Safari native HLS — cannot inject Bearer headers; warn the user
+      setSafariWarning(true)
       video.src = playlistUrl
       video.addEventListener('loadedmetadata', () => {
         setStatus('playing')
@@ -79,7 +81,7 @@ export default function HlsPlayer({ channelId, onReady, onError }: Props) {
       })
       video.addEventListener('error', () => {
         setStatus('error')
-        onError?.('Video load error (native HLS)')
+        onError?.('Video load error — Safari native HLS cannot send auth headers. Use Chrome or Edge for authenticated HLS.')
       })
     } else {
       setStatus('error')
@@ -91,6 +93,15 @@ export default function HlsPlayer({ channelId, onReady, onError }: Props) {
 
   return (
     <>
+      {safariWarning && status !== 'error' && (
+        <div style={{
+          position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20,
+          background: 'rgba(180,90,0,0.85)', color: '#fff',
+          fontSize: 11, padding: '4px 10px', textAlign: 'center',
+        }}>
+          Safari: authenticated HLS may not work — use Chrome or Edge for full support.
+        </div>
+      )}
       {status === 'loading' && (
         <div className="monitor-state-screen state-starting">
           <div className="monitor-spinner" />
