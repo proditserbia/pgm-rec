@@ -465,51 +465,59 @@ def test_manager_start_from_udp_skips_preflight_for_unparseable_url(manager, tmp
 # ---------------------------------------------------------------------------
 
 def test_rts1_has_send_url():
+    """rts1 uses hls_direct mode — send_url and listen_url are not required."""
     cfg = _load_rts1()
     assert cfg.recording_preview_output is not None
-    assert cfg.recording_preview_output.send_url is not None
+    assert cfg.recording_preview_output.mode == "hls_direct"
 
 
 def test_rts1_send_url_is_sender_style():
+    """rts1 uses hls_direct mode — recording_preview_output.mode must be 'hls_direct'."""
     cfg = _load_rts1()
-    send = cfg.recording_preview_output.send_url
-    assert "pkt_size" in send
+    assert cfg.recording_preview_output.mode == "hls_direct"
 
 
 def test_rts1_has_listen_url():
+    """rts1 uses hls_direct mode — no listen_url needed; preview.input_mode is 'hls_direct'."""
     cfg = _load_rts1()
-    assert cfg.recording_preview_output.listen_url is not None
+    assert cfg.preview.input_mode == "hls_direct"
 
 
 def test_rts1_listen_url_is_receiver_style():
+    """rts1 uses hls_direct mode — preview served directly from recording output."""
     cfg = _load_rts1()
-    listen = cfg.recording_preview_output.listen_url
-    assert "overrun_nonfatal" in listen or "fifo_size" in listen
+    assert cfg.recording_preview_output.mode == "hls_direct"
+    assert cfg.preview.input_mode == "hls_direct"
 
 
 def test_rts1_send_url_and_listen_url_differ():
+    """rts1 uses hls_direct mode — hls_direct uses no UDP URLs; check HLS fields instead."""
     cfg = _load_rts1()
     rpo = cfg.recording_preview_output
-    assert rpo.send_url != rpo.listen_url
+    assert rpo.mode == "hls_direct"
+    assert rpo.hls_time == 2
+    assert rpo.hls_list_size == 5
 
 
 def test_rts1_preview_has_udp_port():
+    """rts1 uses hls_direct mode — no UDP port needed; rpo.mode is 'hls_direct'."""
     cfg = _load_rts1()
-    assert cfg.preview.udp_port is not None
+    assert cfg.recording_preview_output.mode == "hls_direct"
 
 
 def test_rts1_preview_udp_port_matches_url_port():
+    """rts1 uses hls_direct mode — HLS flags are set correctly."""
     cfg = _load_rts1()
-    udp_port = cfg.preview.udp_port
-    addr = _extract_udp_host_port(cfg.recording_preview_output.send_url)
-    assert addr is not None
-    assert addr[1] == udp_port
+    rpo = cfg.recording_preview_output
+    assert rpo.mode == "hls_direct"
+    assert "delete_segments" in rpo.hls_flags
+    assert "independent_segments" in rpo.hls_flags
 
 
 def test_rts1_round_trip_with_phase14_fields():
     cfg = _load_rts1()
     data = cfg.model_dump_json()
     cfg2 = ChannelConfig.model_validate_json(data)
-    assert cfg2.recording_preview_output.send_url == cfg.recording_preview_output.send_url
-    assert cfg2.recording_preview_output.listen_url == cfg.recording_preview_output.listen_url
-    assert cfg2.preview.udp_port == cfg.preview.udp_port
+    assert cfg2.recording_preview_output.mode == cfg.recording_preview_output.mode
+    assert cfg2.recording_preview_output.hls_time == cfg.recording_preview_output.hls_time
+    assert cfg2.preview.input_mode == cfg.preview.input_mode

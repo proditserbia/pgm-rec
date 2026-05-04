@@ -603,7 +603,7 @@ def test_rts1_recording_preview_output_fail_safe():
 
 def test_rts1_preview_input_mode_from_udp():
     cfg = _load_rts1()
-    assert cfg.preview.input_mode == "from_udp"
+    assert cfg.preview.input_mode == "hls_direct"
 
 
 def test_rts1_round_trip_with_recording_preview_output():
@@ -612,7 +612,7 @@ def test_rts1_round_trip_with_recording_preview_output():
     cfg2 = ChannelConfig.model_validate_json(data)
     assert cfg2.recording_preview_output is not None
     assert cfg2.recording_preview_output.video_codec == cfg.recording_preview_output.video_codec
-    assert cfg2.preview.input_mode == "from_udp"
+    assert cfg2.preview.input_mode == "hls_direct"
 
 
 # ---------------------------------------------------------------------------
