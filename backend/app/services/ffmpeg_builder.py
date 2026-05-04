@@ -354,6 +354,12 @@ def _build_recording_command_with_preview(config: ChannelConfig) -> list[str]:
         cmd += ["-preset", rpo.preset]
     if rpo.tune and rpo.video_codec == "h264_nvenc":
         cmd += ["-tune", rpo.tune]
+    if rpo.video_codec == "h264_nvenc":
+        # Phase 15: force IDR frames so SPS/PPS are included in every keyframe,
+        # preventing "non-existing PPS 0 referenced" errors for late joiners
+        # and the HLS remuxer.  GOP = fps means one IDR per second.
+        cmd += ["-forced-idr", "1"]
+        cmd += ["-g", str(rpo.fps)]
     cmd += ["-b:v", rpo.bitrate]
 
     cmd += ["-f", rpo.format]
