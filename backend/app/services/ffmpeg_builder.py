@@ -360,9 +360,22 @@ def _build_recording_command_with_preview(config: ChannelConfig) -> list[str]:
         # and the HLS remuxer.  GOP = fps means one IDR per second.
         cmd += ["-forced-idr", "1"]
         cmd += ["-g", str(rpo.fps)]
+        # Phase 19: no B-frames + CBR + repeat SPS/PPS so HLS can reliably
+        # create index.m3u8 without buffering or header-less segments.
+        cmd += ["-bf", "0"]
+        cmd += ["-rc", "cbr"]
+        cmd += ["-repeat_headers", "1"]
+    elif rpo.video_codec == "libx264":
+        # Phase 19: embed SPS/PPS in every keyframe and lock GOP so the HLS
+        # muxer always has the codec headers it needs.
+        cmd += ["-x264-params", f"repeat-headers=1:keyint={rpo.fps}:min-keyint={rpo.fps}:scenecut=0"]
+        cmd += ["-bf", "0"]
     cmd += ["-b:v", rpo.bitrate]
 
     cmd += ["-f", rpo.format]
+    # Phase 19: reduce muxer buffering to improve HLS segment timeliness.
+    cmd += ["-muxdelay", "0"]
+    cmd += ["-muxpreload", "0"]
     # Phase 14: use send_url when set; fall back to legacy url field.
     cmd.append(rpo.send_url if rpo.send_url else rpo.url)
 
