@@ -1067,10 +1067,16 @@ class HlsPreviewManager:
                         ``mode`` is not ``"hls_direct"``.
         """
         rpo = config.recording_preview_output
-        if rpo is None or not rpo.enabled:
+        if rpo is None:
             raise RuntimeError(
                 f"Preview for channel '{channel_id}' uses input_mode='hls_direct' "
-                "but recording_preview_output is not configured or has enabled=False. "
+                "but recording_preview_output is not configured. "
+                "Set recording_preview_output.enabled=True and mode='hls_direct'."
+            )
+        if not rpo.enabled:
+            raise RuntimeError(
+                f"Preview for channel '{channel_id}' uses input_mode='hls_direct' "
+                "but recording_preview_output.enabled=False. "
                 "Set recording_preview_output.enabled=True and mode='hls_direct'."
             )
         if rpo.mode != "hls_direct":

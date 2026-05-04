@@ -380,15 +380,19 @@ def test_hls_direct_nvenc_emits_bf_zero():
 
 
 def test_hls_direct_nvenc_fail_safe_logs_warning():
-    """fail_safe_mode=True with h264_nvenc must emit a WARNING log."""
+    """fail_safe_mode=True with h264_nvenc must emit a WARNING log but still build the command."""
     cfg = _base_config(rpo_kwargs={
         "video_codec": "h264_nvenc", "preset": "p1", "fail_safe_mode": True
     })
     with patch("app.services.ffmpeg_builder.logger") as mock_log:
-        _build_recording_command_with_hls_direct(cfg)
+        cmd = _build_recording_command_with_hls_direct(cfg)
     mock_log.warning.assert_called_once()
     # The format string (first arg) must mention NVENC
     assert "NVENC" in mock_log.warning.call_args[0][0]
+    # Warning is informational — command must still include h264_nvenc codec
+    cv_indices = [i for i, x in enumerate(cmd) if x == "-c:v"]
+    codecs = [cmd[i + 1] for i in cv_indices]
+    assert "h264_nvenc" in codecs
 
 
 # ---------------------------------------------------------------------------
