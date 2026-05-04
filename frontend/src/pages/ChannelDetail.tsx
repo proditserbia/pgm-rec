@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import {
   getChannel, startChannel, stopChannel, restartChannel,
-  getChannelLogs, getChannelCommand, getChannelWatchdog, getChannelAnomalies,
+  getChannelCommand, getChannelWatchdog, getChannelAnomalies,
   startPreview, stopPreview, getPreviewStatus,
   getChannelDiagnostics, reloadChannelConfig,
 } from '../api/client'
@@ -41,12 +41,6 @@ export default function ChannelDetail() {
   const [busy, setBusy] = useState(false)
   const [confirm, setConfirm] = useState<'stop' | 'restart' | null>(null)
 
-  const [logs, setLogs] = useState<string[]>([])
-  const [logsPaused, setLogsPaused] = useState(false)
-  const [logLines, setLogLines] = useState(100)
-  const logRef = useRef<HTMLPreElement>(null)
-  const autoScroll = useRef(true)
-
   const [command, setCommand] = useState<string | null>(null)
   const [cmdOpen, setCmdOpen] = useState(false)
 
@@ -57,7 +51,6 @@ export default function ChannelDetail() {
   const [previewStatus, setPreviewStatus] = useState<HlsPreviewStatusResponse | null>(null)
   const [previewBusy, setPreviewBusy] = useState(false)
   const [previewError, setPreviewError] = useState<string | null>(null)
-  const [showPlayer, setShowPlayer] = useState(false)
 
   // Phase 9: channel diagnostics (admin only, on-demand)
   const [diagnostics, setDiagnostics] = useState<ChannelDiagnosticsResponse | null>(null)
@@ -78,41 +71,24 @@ export default function ChannelDetail() {
     }
   }, [id])
 
-  const fetchLogs = useCallback(async () => {
-    if (!id || logsPaused || !isAdmin) return
-    try {
-      const r = await getChannelLogs(id, logLines)
-      setLogs(r.lines)
-    } catch { /* ignore */ }
-  }, [id, logLines, logsPaused, isAdmin])
-
   const fetchPreviewStatus = useCallback(async () => {
     if (!id) return
     try { setPreviewStatus(await getPreviewStatus(id)) } catch { /* ignore */ }
   }, [id])
 
-  // Auto-scroll
-  useEffect(() => {
-    if (autoScroll.current && logRef.current) {
-      logRef.current.scrollTop = logRef.current.scrollHeight
-    }
-  }, [logs])
-
   useEffect(() => {
     if (!id) return
     fetchDetail()
-    if (isAdmin) fetchLogs()
     if (isAdmin) getChannelCommand(id).then(r => setCommand(r.command_str)).catch(() => {})
     getChannelWatchdog(id).then(r => setWatchdog(r.recent_events)).catch(() => {})
     getChannelAnomalies(id).then(r => setAnomalies(r)).catch(() => {})
     fetchPreviewStatus()
     const iv = setInterval(() => {
       fetchDetail()
-      if (isAdmin) fetchLogs()
       fetchPreviewStatus()
     }, POLL_MS)
     return () => clearInterval(iv)
-  }, [fetchDetail, fetchLogs, fetchPreviewStatus, id, isAdmin])
+  }, [fetchDetail, fetchPreviewStatus, id, isAdmin])
 
   async function doAction(action: (id: string) => Promise<unknown>) {
     if (!id) return
@@ -145,7 +121,6 @@ export default function ChannelDetail() {
   async function handleStopPreview() {
     if (!id) return
     setPreviewBusy(true); setPreviewError(null)
-    setShowPlayer(false)
     try {
       const s = await stopPreview(id)
       setPreviewStatus(s)
@@ -173,14 +148,6 @@ export default function ChannelDetail() {
     } catch (e) {
       setReloadError(e instanceof Error ? e.message : 'Reload failed')
     } finally { setReloadBusy(false) }
-  }
-
-  function renderLogLine(line: string, i: number) {
-    const lower = line.toLowerCase()
-    const cls =
-      lower.includes('error') || lower.includes('failed') ? 'log-line-error' :
-      lower.includes('warn') ? 'log-line-warn' : ''
-    return <div key={i} className={cls || undefined}>{line || ' '}</div>
   }
 
   if (!detail && !error) return <div className="page">Loading…</div>
@@ -336,21 +303,8 @@ export default function ChannelDetail() {
               </div>
             )}
 
-            {/* State: ready but player not opened yet */}
-            {previewReady && !showPlayer && (
-              <div className="monitor-state-screen">
-                <span style={{ fontSize: 28, opacity: 0.3 }}>▶</span>
-                <button
-                  className="btn btn-secondary btn-sm"
-                  onClick={() => setShowPlayer(true)}
-                >
-                  ▶ Open Player
-                </button>
-              </div>
-            )}
-
-            {/* Player */}
-            {previewReady && showPlayer && id && (
+            {/* Player — auto-shown once playlist is ready */}
+            {previewReady && id && (
               <>
                 <HlsPlayer
                   channelId={id}
@@ -448,44 +402,6 @@ export default function ChannelDetail() {
             {command ?? 'Loading…'}
           </pre>
         )}
-      </div>
-      )}
-
-      {/* Logs — admin only */}
-      {isAdmin && (
-      <div className="card">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
-          <span className="card-title" style={{ marginBottom: 0 }}>FFmpeg Log Tail</span>
-          <div className="btn-group">
-            <select
-              value={logLines}
-              onChange={e => setLogLines(Number(e.target.value))}
-              style={{ fontSize: 12, padding: '2px 6px', border: '1px solid #ccc', borderRadius: 4 }}
-            >
-              {[50, 100, 200, 500].map(n => <option key={n} value={n}>{n} lines</option>)}
-            </select>
-            <button
-              className={`btn btn-sm ${logsPaused ? 'btn-success' : 'btn-secondary'}`}
-              onClick={() => setLogsPaused(p => !p)}
-            >{logsPaused ? '▶ Resume' : '⏸ Pause'}</button>
-            <button className="btn btn-sm btn-secondary" onClick={fetchLogs}>↻ Refresh</button>
-          </div>
-        </div>
-        {logs.length === 0
-          ? <p className="empty-state">No log lines available.</p>
-          : (
-            <pre
-              ref={logRef}
-              className="log-block"
-              onScroll={e => {
-                const el = e.currentTarget
-                autoScroll.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 20
-              }}
-            >
-              {logs.map(renderLogLine)}
-            </pre>
-          )
-        }
       </div>
       )}
 

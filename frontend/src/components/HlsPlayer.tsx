@@ -90,7 +90,7 @@ export default function HlsPlayer({ channelId, onReady, onError }: Props) {
   }, [channelId, playlistUrl])
 
   return (
-    <div className="monitor-viewport-ratio">
+    <>
       {status === 'loading' && (
         <div className="monitor-state-screen state-starting">
           <div className="monitor-spinner" />
@@ -103,6 +103,6 @@ export default function HlsPlayer({ channelId, onReady, onError }: Props) {
         playsInline
         controls
       />
-    </div>
+    </>
   )
 }
