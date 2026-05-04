@@ -535,6 +535,7 @@ def test_manager_start_preview_from_udp(manager, tmp_path):
     mock_proc = _mock_process()
 
     with patch("app.services.hls_preview_manager.get_settings") as mock_settings, \
+         patch("app.services.hls_preview_manager._probe_udp_stream", return_value=True), \
          patch("subprocess.Popen", return_value=mock_proc):
         ms = MagicMock()
         ms.logs_dir = tmp_path / "logs"

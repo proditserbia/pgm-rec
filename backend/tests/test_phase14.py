@@ -412,6 +412,7 @@ def test_manager_start_from_udp_proceeds_on_free_port(manager, tmp_path):
     mock_proc = _mock_process()
 
     with patch("app.services.hls_preview_manager.get_settings") as mock_settings, \
+         patch("app.services.hls_preview_manager._probe_udp_stream", return_value=True), \
          patch("subprocess.Popen", return_value=mock_proc):
         ms = MagicMock()
         ms.logs_dir = tmp_path / "logs"
@@ -444,7 +445,8 @@ def test_manager_start_from_udp_skips_preflight_for_unparseable_url(manager, tmp
     with patch(
         "app.services.hls_preview_manager._extract_udp_host_port",
         return_value=None,  # simulate unparseable URL
-    ), patch("app.services.hls_preview_manager.get_settings") as mock_settings, \
+    ), patch("app.services.hls_preview_manager._probe_udp_stream", return_value=True), \
+       patch("app.services.hls_preview_manager.get_settings") as mock_settings, \
        patch("subprocess.Popen", return_value=mock_proc):
         ms = MagicMock()
         ms.logs_dir = tmp_path / "logs"

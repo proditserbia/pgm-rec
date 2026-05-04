@@ -174,6 +174,57 @@ def _extract_udp_host_port(url: str) -> Optional[tuple[str, int]]:
         return None
 
 
+def _probe_udp_stream(ffmpeg_path: str, listen_url: str, probe_seconds: int = 3) -> bool:
+    """
+    Run a short FFmpeg probe to verify the UDP stream is live before the
+    long-lived HLS writer process is started — Phase 21.
+
+    Spawns::
+
+        ffmpeg -hide_banner -t <probe_seconds> -i <listen_url> -f null -
+
+    and waits for it to complete.  A zero exit code means FFmpeg successfully
+    read data from the stream; a non-zero exit code (or a wall-clock timeout)
+    means the stream is not yet available.
+
+    Parameters
+    ----------
+    ffmpeg_path : str
+        The FFmpeg executable path to use (from ``ChannelConfig.ffmpeg_path``).
+    listen_url : str
+        The UDP URL to probe (``recording_preview_output.listen_url`` or
+        ``.url``).
+    probe_seconds : int
+        How many seconds of input to read.  Defaults to 3.
+
+    Returns
+    -------
+    bool
+        ``True``  — stream is live; safe to start the HLS FFmpeg process.
+        ``False`` — stream not ready, probe timed out, or FFmpeg not found.
+    """
+    cmd = [
+        ffmpeg_path,
+        "-hide_banner",
+        "-t", str(probe_seconds),
+        "-i", listen_url,
+        "-f", "null",
+        "-",
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=probe_seconds + 5,
+        )
+        return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
+    except OSError:
+        return False
+
+
 def _find_latest_usable_segment(record_dir: Path, chunks_dir: Path) -> Optional[Path]:
     """
     Find the latest completed .mp4 segment suitable for file-based preview.
@@ -877,6 +928,26 @@ class HlsPreviewManager:
                     "Stop the conflicting process and retry. "
                     f"(listen_url={listen_url!r})"
                 )
+
+        # Phase 21 — UDP readiness probe: verify the recording FFmpeg is
+        # already streaming before committing the HLS reader.  Without this
+        # check the HLS FFmpeg would start, find no data on the UDP port and
+        # block until the 30 s startup timeout fires.
+        logger.info(
+            "[hls-preview][%s] from_udp: probing UDP stream at %s …",
+            channel_id, listen_url,
+        )
+        if not _probe_udp_stream(config.ffmpeg_path, listen_url):
+            raise RuntimeError(
+                f"UDP stream not ready on {listen_url!r}. "
+                "Confirm that recording is running with "
+                "recording_preview_output.enabled=True and that the recording "
+                "FFmpeg process is actively streaming UDP before starting preview."
+            )
+        logger.info(
+            "[hls-preview][%s] from_udp: UDP stream confirmed live at %s.",
+            channel_id, listen_url,
+        )
 
         # Phase 17 — determine the HLS encoding mode to use.
         if _force_mode is not None:

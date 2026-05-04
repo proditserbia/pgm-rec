@@ -356,6 +356,7 @@ def _make_manager_with_udp_start(hls_mode: str = "auto") -> tuple[HlsPreviewMana
 
     with (
         patch("app.services.hls_preview_manager._check_udp_port_available", return_value=True),
+        patch("app.services.hls_preview_manager._probe_udp_stream", return_value=True),
         patch("app.services.hls_preview_manager.HlsPreviewManager._clean_output_dir"),
         patch("app.services.hls_preview_manager.HlsPreviewManager._new_log_path", return_value=Path("/tmp/test.log")),
         patch("builtins.open", MagicMock()),
@@ -399,6 +400,7 @@ def test_start_from_udp_force_mode_transcode():
 
     with (
         patch("app.services.hls_preview_manager._check_udp_port_available", return_value=True),
+        patch("app.services.hls_preview_manager._probe_udp_stream", return_value=True),
         patch("app.services.hls_preview_manager.HlsPreviewManager._clean_output_dir"),
         patch("app.services.hls_preview_manager.HlsPreviewManager._new_log_path", return_value=Path("/tmp/test.log")),
         patch("builtins.open", MagicMock()),
@@ -707,6 +709,7 @@ def test_stop_preview_clears_udp_mode_configs():
 
     with (
         patch("app.services.hls_preview_manager._check_udp_port_available", return_value=True),
+        patch("app.services.hls_preview_manager._probe_udp_stream", return_value=True),
         patch("app.services.hls_preview_manager.HlsPreviewManager._clean_output_dir"),
         patch("app.services.hls_preview_manager.HlsPreviewManager._new_log_path", return_value=Path("/tmp/test.log")),
         patch("builtins.open", MagicMock()),
