@@ -53,6 +53,7 @@ def _cfg_nvenc(fps: int = 10, **rpo_kwargs) -> ChannelConfig:
 def _cfg_libx264(fps: int = 10, **rpo_kwargs) -> ChannelConfig:
     rpo_kwargs.setdefault("enabled", True)
     rpo_kwargs.setdefault("video_codec", "libx264")
+    rpo_kwargs.setdefault("fail_safe_mode", False)
     rpo_kwargs.setdefault("fps", fps)
     return ChannelConfig(
         id="rts1",
@@ -221,9 +222,9 @@ def test_nvenc_preview_muxdelay_after_format():
     """-muxdelay must appear after -f mpegts in the preview output section."""
     cmd = build_ffmpeg_command(_cfg_nvenc())
     f_indices = [i for i, x in enumerate(cmd) if x == "-f"]
-    last_f = max(f_indices)
+    last_f_index = max(f_indices)
     idx_muxdelay = cmd.index("-muxdelay")
-    assert idx_muxdelay > last_f
+    assert idx_muxdelay > last_f_index
 
 
 def test_nvenc_preview_muxpreload_after_muxdelay():
