@@ -288,6 +288,7 @@ tr:hover td { background: #fafafa; }
   color: #888;
   font-size: 13px;
   background: #0a0a0c;
+  z-index: 1;
 }
 
 .monitor-state-screen.state-error { color: #ef4444; }
