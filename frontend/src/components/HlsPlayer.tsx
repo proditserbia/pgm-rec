@@ -17,9 +17,11 @@ interface Props {
   onReady?: () => void
   /** Called on fatal HLS errors */
   onError?: (msg: string) => void
+  /** Whether to show video controls (default true) */
+  controls?: boolean
 }
 
-export default function HlsPlayer({ channelId, onReady, onError }: Props) {
+export default function HlsPlayer({ channelId, onReady, onError, controls = true }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const hlsRef = useRef<Hls | null>(null)
   const [status, setStatus] = useState<'loading' | 'playing' | 'error'>('loading')
@@ -112,7 +114,7 @@ export default function HlsPlayer({ channelId, onReady, onError }: Props) {
         ref={videoRef}
         muted
         playsInline
-        controls
+        controls={controls}
       />
     </>
   )

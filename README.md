@@ -1031,3 +1031,53 @@ Prefer paths.record_root with date folders.
 | `PGMREC_SEGMENT_INDEXER_MIN_AGE_SECONDS` | `30` | Minimum file age before indexing |
 | `PGMREC_SEGMENT_INDEXER_STABILITY_CHECK_SECONDS` | `1.0` | Size-stability double-read interval |
 | `PGMREC_SEGMENT_INDEXER_MIN_DURATION_SECONDS` | `1.0` | Minimum ffprobe duration to accept |
+
+---
+
+## Dashboard Disk Usage
+
+The **Disk** widget on the Dashboard (`GET /api/v1/system/disk`) monitors the
+filesystem that actually stores recordings, not the application data directory.
+
+### Priority
+
+| Priority | Path used | When |
+|----------|-----------|------|
+| 1 | `PGMREC_RECORDING_ROOT` | When the setting is configured |
+| 2 | `PGMREC_DATA_DIR` | Fallback when `PGMREC_RECORDING_ROOT` is not set |
+
+This ensures the widget reflects the free space on the **recording disk**
+(e.g. `D:`) rather than the system disk (`C:`) that hosts the application.
+
+### Response fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `path_checked` | string | Directory whose filesystem was measured |
+| `total_bytes` | integer | Total filesystem size in bytes |
+| `used_bytes` | integer | Used bytes on the filesystem |
+| `free_bytes` | integer | Free bytes on the filesystem |
+| `percent_used` | float | Percentage of disk space used |
+| `warning` | string \| null | Set when `PGMREC_RECORDING_ROOT` could not be created |
+
+### Example
+
+```env
+# .env
+PGMREC_RECORDING_ROOT=D:\AutoRec\record
+```
+
+Dashboard widget will display:
+
+```
+Disk: D:\AutoRec\record  ████████░░  82% used  (36.0 GB free / 200.0 GB)
+```
+
+### Missing recording root
+
+If `PGMREC_RECORDING_ROOT` is set but the directory does not exist, PGMRec
+will attempt to create it automatically.  If creation succeeds, disk usage for
+the new (empty) directory is reported normally.  If creation fails (e.g.
+drive not mounted), the response includes a `warning` message and the
+Dashboard shows a **⚠ DISK PATH WARN** badge; disk usage falls back to
+`PGMREC_DATA_DIR` so the widget always shows something useful.

@@ -131,7 +131,7 @@ export interface ChannelDebugResponse {
 }
 
 export interface DiskUsageResponse {
-  path: string; total_bytes: number; used_bytes: number; free_bytes: number; percent_used: number
+  path_checked: string; total_bytes: number; used_bytes: number; free_bytes: number; percent_used: number; warning?: string | null
 }
 
 // ── Exports ───────────────────────────────────────────────────────────────────

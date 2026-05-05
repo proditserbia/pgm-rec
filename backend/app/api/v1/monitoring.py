@@ -6,13 +6,14 @@ Endpoints:
   GET /api/v1/channels/{id}/anomalies     segment anomaly history
   GET /api/v1/channels/{id}/debug         detailed real-time diagnostics (Phase 1.6)
   GET /api/v1/system/health               aggregated health of all channels
-  GET /api/v1/system/disk                 disk usage for the data directory (Phase 3.5)
+  GET /api/v1/system/disk                 disk usage for the recording storage (Phase 3.5)
 """
 from __future__ import annotations
 
 import shutil
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -221,9 +222,38 @@ def get_system_health(db: DbDep, _: AnyRoleDep):
 
 @router.get("/system/disk", response_model=DiskUsageResponse)
 def get_disk_usage(_: AnyRoleDep) -> DiskUsageResponse:
-    """Disk usage for the filesystem where recordings are stored."""
+    """Disk usage for the filesystem where recordings are stored.
+
+    Priority:
+      1. ``PGMREC_RECORDING_ROOT`` — the actual recording disk (preferred).
+      2. ``data_dir`` — application data directory (fallback when
+         ``PGMREC_RECORDING_ROOT`` is not configured).
+
+    When ``PGMREC_RECORDING_ROOT`` is set but the directory does not yet
+    exist, PGMRec attempts to create it.  If creation fails, the response
+    includes a ``warning`` field and falls back to ``data_dir``.
+    """
     settings = get_settings()
-    disk_path = str(settings.data_dir)
+    warning: str | None = None
+    disk_path: str
+
+    if settings.recording_root is not None:
+        rec_root = Path(settings.recording_root)
+        created_or_exists = True
+        if not rec_root.exists():
+            try:
+                rec_root.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                warning = (
+                    f"PGMREC_RECORDING_ROOT '{rec_root}' does not exist and "
+                    f"could not be created: {exc}. Disk usage reported for "
+                    f"'{settings.data_dir}' instead."
+                )
+                created_or_exists = False
+        disk_path = str(rec_root) if created_or_exists else str(settings.data_dir)
+    else:
+        disk_path = str(settings.data_dir)
+
     try:
         usage = shutil.disk_usage(disk_path)
     except OSError:
@@ -234,9 +264,10 @@ def get_disk_usage(_: AnyRoleDep) -> DiskUsageResponse:
     free = usage.free
     percent = round(used / total * 100, 1) if total > 0 else 0.0
     return DiskUsageResponse(
-        path=disk_path,
+        path_checked=disk_path,
         total_bytes=total,
         used_bytes=used,
         free_bytes=free,
         percent_used=percent,
+        warning=warning,
     )
