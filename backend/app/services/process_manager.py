@@ -532,46 +532,172 @@ class ProcessManager:
 
     # ── Core lifecycle ────────────────────────────────────────────────────
 
+    def _preflight_check(self, channel_id: str, config: ChannelConfig) -> None:
+        """
+        Validate the channel configuration before launching FFmpeg.
+
+        Raises :exc:`ValueError` with a human-readable message when a
+        configuration problem is detected so that the API layer can return a
+        clear HTTP 400 response instead of a cryptic 500.
+
+        Checks performed:
+        - ``ffmpeg_path`` is set and points to an existing file (skipped if the
+          path is a bare name such as ``"ffmpeg"`` without a directory separator,
+          which relies on ``$PATH`` lookup).
+        - Date-based mode requires ``record_root`` to be set.
+        - ``record_root`` (date-based) or ``record_dir`` (legacy) must be
+          creatable/reachable.
+        - FFmpeg output pattern must be non-empty (i.e. the path builder did
+          not silently fall back to an empty string).
+        - When ``recording_preview_output.mode == "hls_direct"``, the preview
+          output directory must be creatable.
+        """
+        from .ffmpeg_builder import _output_pattern as _op
+        from pathlib import Path as _Path
+
+        paths = config.paths
+
+        # ── ffmpeg binary exists ───────────────────────────────────────────
+        ffmpeg = config.ffmpeg_path
+        if not ffmpeg:
+            raise ValueError(
+                f"[{channel_id}] ffmpeg_path is empty. "
+                "Set a valid path to the ffmpeg binary in the channel config."
+            )
+        # Only validate if the value looks like a full path (contains a separator)
+        if (_Path(ffmpeg).parent != _Path(".")) and not _Path(ffmpeg).is_file():
+            raise ValueError(
+                f"[{channel_id}] ffmpeg binary not found at '{ffmpeg}'. "
+                "Check the ffmpeg_path setting in the channel config."
+            )
+
+        # ── Date-based mode requires record_root ──────────────────────────
+        if paths.effective_use_date_folders:
+            if not paths.record_root:
+                raise ValueError(
+                    f"[{channel_id}] Date-based recording mode is active but "
+                    "paths.record_root is not set. "
+                    "Add \"record_root\" to the channel's paths config, e.g.: "
+                    "\"D:\\\\AutoRec\\\\record\\\\rts1\"."
+                )
+            # Ensure record_root is reachable/creatable
+            root = resolve_channel_path(paths.record_root)
+            try:
+                root.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise ValueError(
+                    f"[{channel_id}] Cannot create/access record_root '{root}': {exc}"
+                ) from exc
+        elif not paths.record_dir:
+            raise ValueError(
+                f"[{channel_id}] Neither record_root (date-based) nor record_dir "
+                "(legacy) is configured. Add one of these to the channel's paths config."
+            )
+
+        # ── Output pattern must be non-empty (date-based mode only) ──────────
+        # In date-based mode the output pattern is built entirely from record_root;
+        # an empty string means record_root was not resolved correctly.
+        # Legacy mode (record_dir set) does not use this pattern builder.
+        if paths.effective_use_date_folders:
+            try:
+                pattern = _op(config)
+            except Exception as exc:
+                raise ValueError(
+                    f"[{channel_id}] Failed to build FFmpeg output path pattern: {exc}"
+                ) from exc
+            if not pattern:
+                raise ValueError(
+                    f"[{channel_id}] FFmpeg output path pattern is empty. "
+                    "Ensure record_root is configured for date-based mode."
+                )
+
+        # ── HLS direct preview output dir ─────────────────────────────────
+        rpo = config.recording_preview_output
+        if rpo is not None and rpo.enabled and getattr(rpo, "mode", "udp") == "hls_direct":
+            settings = get_settings()
+            preview_dir = settings.preview_dir / channel_id
+            try:
+                preview_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise ValueError(
+                    f"[{channel_id}] Cannot create HLS preview directory "
+                    f"'{preview_dir}': {exc}"
+                ) from exc
+
     def start(self, channel_id: str, config: ChannelConfig, db: Session) -> ProcessInfo:
         """
         Launch FFmpeg for *channel_id*.
 
         Raises RuntimeError if already recording.
+        Raises ValueError if the channel configuration is invalid (preflight check).
         stdout is suppressed; stderr goes to a timestamped log file.
         On Windows, CREATE_NO_WINDOW suppresses the console (equivalent to start /min).
 
         Phase 6.2: checks minimum free disk space before launching.
+        Phase 27: preflight config validation; full traceback logging on errors;
+                  date-based mode no longer requires record_dir/chunks_dir.
         """
         if self.is_running(channel_id):
             raise RuntimeError(f"Channel '{channel_id}' is already recording.")
 
+        # Phase 27 — Preflight config validation (raises ValueError on bad config)
+        self._preflight_check(channel_id, config)
+
         # Phase 6.2 — Disk space safety check
+        # Use record_root for date-based channels; record_dir for legacy channels.
         settings = get_settings()
         min_free = settings.min_free_disk_bytes
         if min_free > 0:
-            record_dir = resolve_channel_path(config.paths.record_dir)
-            check_dir = record_dir if record_dir.exists() else record_dir.parent
-            try:
-                free = shutil.disk_usage(str(check_dir)).free
-                if free < min_free:
-                    msg = (
-                        f"[{channel_id}] Insufficient disk space: "
-                        f"{free // (1024 * 1024)} MB free, "
-                        f"minimum required {min_free // (1024 * 1024)} MB. "
-                        "Recording NOT started."
-                    )
-                    logger.error(msg)
-                    self.mark_degraded(channel_id)
-                    raise RuntimeError(msg)
-            except OSError as exc:
-                logger.warning("[%s] Could not check disk space: %s", channel_id, exc)
+            paths = config.paths
+            if paths.effective_use_date_folders and paths.record_root:
+                _check_path = resolve_channel_path(paths.record_root)
+            elif paths.record_dir:
+                _check_path = resolve_channel_path(paths.record_dir)
+            else:
+                _check_path = None
 
-        cmd = build_ffmpeg_command(config)
+            if _check_path is not None:
+                check_dir = _check_path if _check_path.exists() else _check_path.parent
+                try:
+                    free = shutil.disk_usage(str(check_dir)).free
+                    if free < min_free:
+                        msg = (
+                            f"[{channel_id}] Insufficient disk space: "
+                            f"{free // (1024 * 1024)} MB free, "
+                            f"minimum required {min_free // (1024 * 1024)} MB. "
+                            "Recording NOT started."
+                        )
+                        logger.error(msg)
+                        self.mark_degraded(channel_id)
+                        raise RuntimeError(msg)
+                except OSError as exc:
+                    logger.warning("[%s] Could not check disk space: %s", channel_id, exc)
+
+        # Phase 27 — Build FFmpeg command with full traceback on failure
+        try:
+            cmd = build_ffmpeg_command(config)
+        except Exception:
+            logger.exception(
+                "[%s] Failed to build FFmpeg command. "
+                "Check channel config (record_root, ffmpeg_path, filters).",
+                channel_id,
+            )
+            raise
+
         log_path = self._new_log_path(channel_id)
         self._prune_old_logs(channel_id)
 
-        # Ensure output directory exists before FFmpeg tries to write there
-        resolve_channel_path(config.paths.record_dir).mkdir(parents=True, exist_ok=True)
+        # Ensure output directory/directories exist before FFmpeg tries to write.
+        # Date-based mode: pre-create today's and tomorrow's date folders so
+        # FFmpeg's stream_segment muxer (which does not create directories) can
+        # write files across midnight without failing.
+        # Legacy mode: create the configured record_dir.
+        paths = config.paths
+        if paths.effective_use_date_folders and paths.record_root:
+            from .ffmpeg_builder import ensure_date_folders
+            ensure_date_folders(config)
+        elif paths.record_dir:
+            resolve_channel_path(paths.record_dir).mkdir(parents=True, exist_ok=True)
 
         # Write command header to log (text mode)
         now_iso = utc_now().isoformat()
@@ -590,12 +716,21 @@ class ProcessManager:
             if sys.platform == "win32":
                 extra["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=log_fh,
-                **extra,
-            )
+            try:
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=log_fh,
+                    **extra,
+                )
+            except Exception:
+                logger.exception(
+                    "[%s] subprocess.Popen() failed. "
+                    "Command: %s",
+                    channel_id,
+                    format_command_for_log(cmd),
+                )
+                raise
         finally:
             # Always close the parent's copy — subprocess keeps its own fd.
             log_fh.close()

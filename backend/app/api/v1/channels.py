@@ -164,7 +164,13 @@ def start_channel(channel_id: str, db: DbDep, _: AdminDep):
         info = pm.start(channel_id, config, db)
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        logger.error(
+            "[%s] Start rejected — invalid config: %s", channel_id, exc
+        )
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
+        logger.exception("[%s] Unexpected error starting FFmpeg.", channel_id)
         raise HTTPException(status_code=500, detail=f"Failed to start FFmpeg: {exc}")
     return ActionResponse(
         success=True,
