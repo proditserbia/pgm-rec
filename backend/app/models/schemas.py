@@ -215,11 +215,51 @@ class SegmentConfig(BaseModel):
 
 
 class PathConfig(BaseModel):
-    """Three-stage output directory pipeline (replicates bat folder convention)."""
+    """
+    Recording output path configuration.
 
-    record_dir: str   # Stage 1: active recording  (1_record)
-    chunks_dir: str   # Stage 2: completed chunks  (2_chunks)
-    final_dir: str    # Stage 3: merged daily files (3_final)
+    **New (Phase 23) — date-folder mode** (preferred):
+        Set ``record_root`` to the channel recording root, e.g.
+        ``D:\\AutoRec\\record\\rts1``.  FFmpeg writes segments directly into
+        a per-day sub-folder:  ``{record_root}/{YYYY_MM_DD}/{filename}.mp4``
+
+        ``use_date_folders`` is ``True`` by default when ``record_root`` is
+        set (and ``record_dir`` is absent).  The date sub-folder name format
+        is controlled by ``date_folder_format`` (strftime; default
+        ``%Y_%m_%d``).
+
+    **Legacy (Phase 1–22) — three-stage pipeline**:
+        ``record_dir`` / ``chunks_dir`` / ``final_dir`` remain accepted for
+        backward compatibility.  When present and ``record_root`` is absent,
+        ``use_date_folders`` defaults to ``False`` and the old file-mover
+        behaviour is retained.
+    """
+
+    # ── New (Phase 23) ─────────────────────────────────────────────────────
+    # Root directory for the channel (e.g. D:\AutoRec\record\rts1).
+    # FFmpeg writes segments into {record_root}/{date_folder}/{filename}.mp4
+    record_root: Optional[str] = None
+
+    # When True segments are written into date-based sub-folders.
+    # Defaults to True when record_root is set; False when using legacy paths.
+    use_date_folders: Optional[bool] = None
+
+    # strftime pattern for the date sub-folder name (default: "%Y_%m_%d").
+    date_folder_format: str = "%Y_%m_%d"
+
+    # ── Legacy (Phase 1–22) ────────────────────────────────────────────────
+    record_dir: Optional[str] = None   # Stage 1: active recording  (1_record)
+    chunks_dir: Optional[str] = None   # Stage 2: completed chunks  (2_chunks)
+    final_dir: Optional[str] = None    # Stage 3: merged daily files (3_final)
+
+    @property
+    def effective_use_date_folders(self) -> bool:
+        """Return True when date-folder mode should be used."""
+        if self.use_date_folders is not None:
+            return self.use_date_folders
+        # Auto-detect: date folders whenever record_root is set.
+        # record_dir may coexist for backward compatibility, but record_root wins.
+        return self.record_root is not None
 
 
 class RetentionConfig(BaseModel):
@@ -689,6 +729,8 @@ class ExportJobResponse(BaseModel):
     preroll_seconds: float = 0.0
     postroll_seconds: float = 0.0
     never_expires: bool = False
+    # Phase 24 — "manual" | "daily_archive"
+    job_source: str = "manual"
 
 
 # ─── System — Phase 3.5 ───────────────────────────────────────────────────────
@@ -701,6 +743,55 @@ class DiskUsageResponse(BaseModel):
     used_bytes: int
     free_bytes: int
     percent_used: float
+
+
+# ─── Recording Retention — Phase 25 ─────────────────────────────────────────
+
+class RetentionRunRequest(BaseModel):
+    """
+    Request body for POST /api/v1/retention/run.
+
+    channel_id: specific channel to clean up; None = run for all channels.
+    dry_run: when True, return what *would* be deleted without actually deleting.
+    """
+
+    channel_id: Optional[str] = None
+    dry_run: bool = True
+
+
+class RetentionChannelResult(BaseModel):
+    """
+    Retention result for a single channel.
+
+    Included in RetentionRunResponse.channels.
+    """
+
+    channel_id: str
+    skipped: bool = False
+    skip_reason: Optional[str] = None
+    files_deleted: int = 0
+    folders_deleted: int = 0
+    total_bytes: int = 0
+    # Paths that were (or would be) deleted — populated in both dry_run and live modes.
+    files_to_delete: list[str] = Field(default_factory=list)
+    folders_to_delete: list[str] = Field(default_factory=list)
+
+
+class RetentionRunResponse(BaseModel):
+    """
+    Response body for POST /api/v1/retention/run.
+
+    dry_run=True  → executed=False: files_to_delete/folders_to_delete are populated
+                   but nothing was actually deleted.
+    dry_run=False → executed=True: deletion was performed; counts reflect actuals.
+    """
+
+    dry_run: bool
+    executed: bool
+    channels: list[RetentionChannelResult] = Field(default_factory=list)
+    total_files_deleted: int = 0
+    total_folders_deleted: int = 0
+    total_bytes: int = 0
 
 
 # ─── System config — Phase 8 ─────────────────────────────────────────────────

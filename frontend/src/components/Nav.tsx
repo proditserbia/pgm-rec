@@ -18,7 +18,7 @@ export default function Nav() {
 
   return (
     <nav className="nav">
-      <NavLink to="/" className="nav-brand">🎬 PGMRec</NavLink>
+      <NavLink to="/" className="nav-brand"><span className="brand-pgm">PGM</span><span className="brand-rec">Rec</span></NavLink>
       <NavLink to="/" end>Dashboard</NavLink>
       {canExport && <NavLink to="/exports">Export Jobs</NavLink>}
       {canExport && <NavLink to="/exports/new">New Export</NavLink>}

@@ -29,7 +29,7 @@ import platform
 import shlex
 from pathlib import Path
 
-from ..config.settings import get_settings, resolve_channel_path
+from ..config.settings import get_settings, resolve_channel_path, resolve_date_folder
 from ..models.schemas import ChannelConfig, OverlayConfig
 
 logger = logging.getLogger(__name__)
@@ -225,11 +225,86 @@ def _output_pattern(config: ChannelConfig) -> str:
     """
     Build the strftime output path pattern for the stream_segment muxer.
 
-    Returns a native-platform path string; pathlib handles separator differences.
+    Phase 23 — date-folder mode:
+        When ``paths.record_root`` is set and ``use_date_folders`` is True,
+        the pattern includes a date sub-folder:
+
+            {record_root}/{date_folder_format}/{filename_pattern}.mp4
+
+        FFmpeg's stream_segment muxer evaluates the entire path through
+        strftime, so both the folder name and the filename are expanded at
+        run-time.  The caller must ensure the date folder for today (and
+        tomorrow) already exists before FFmpeg starts, because
+        ``stream_segment`` does **not** create intermediate directories.
+
+    Legacy mode:
+        When only ``paths.record_dir`` is set, the pattern is the flat path
+        used in Phases 1–22:
+
+            {record_dir}/{filename_pattern}.mp4
     """
     seg = config.segmentation
-    record_dir = resolve_channel_path(config.paths.record_dir)
+    paths = config.paths
+
+    if paths.effective_use_date_folders and paths.record_root:
+        root = resolve_channel_path(paths.record_root)
+        # Embed the strftime date-folder pattern directly in the output path so
+        # FFmpeg expands it.  Both the folder and the filename use strftime.
+        date_pattern = paths.date_folder_format  # e.g. "%Y_%m_%d"
+        return str(root / date_pattern / f"{seg.filename_pattern}.mp4")
+
+    # Legacy: flat record_dir
+    record_dir = resolve_channel_path(config.paths.record_dir or "")
     return str(record_dir / f"{seg.filename_pattern}.mp4")
+
+
+def ensure_date_folders(config: ChannelConfig, dates=None) -> list[Path]:
+    """
+    Pre-create the date sub-folder(s) for *config* under its ``record_root``.
+
+    FFmpeg's ``stream_segment`` muxer does **not** create intermediate
+    directories, so the date folder must exist before recording starts.
+    This function should be called:
+
+    - Once at server startup for all channels using date-folder mode.
+    - Near midnight (e.g. via the segment-indexer run) so the *next* day's
+      folder is created before FFmpeg rolls over.
+
+    Parameters
+    ----------
+    config : ChannelConfig
+        Channel configuration.  The function is a no-op when
+        ``paths.effective_use_date_folders`` is ``False`` or
+        ``paths.record_root`` is not set.
+    dates : list[datetime.date] | None
+        Explicit dates to create; defaults to ``[today, tomorrow]``.
+
+    Returns
+    -------
+    list[Path]
+        List of created (or already-existing) folder paths.
+    """
+    import datetime as _dt
+
+    paths = config.paths
+    if not paths.effective_use_date_folders or not paths.record_root:
+        return []
+
+    if dates is None:
+        today = _dt.date.today()
+        dates = [today, today + _dt.timedelta(days=1)]
+
+    created: list[Path] = []
+    for d in dates:
+        folder = resolve_date_folder(paths.record_root, paths.date_folder_format, d)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            created.append(folder)
+        except OSError as exc:
+            logger.warning(
+                "[ffmpeg-builder] Could not create date folder %s: %s", folder, exc
+            )
+    return created
 
 
 # ─── Public API ───────────────────────────────────────────────────────────────

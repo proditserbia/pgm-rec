@@ -34,7 +34,6 @@ export default function LivePreviewCard({
       {/* Title bar */}
       <div className="monitor-titlebar">
         <div className={`monitor-live-dot dot-${startupStatus}`} />
-        <span className="monitor-title">Live Preview</span>
 
         {startupStatus === 'running' && (
           <span className="monitor-live-label label-running">LIVE</span>
@@ -44,9 +43,6 @@ export default function LivePreviewCard({
         )}
         {startupStatus === 'failed' && (
           <span className="monitor-live-label label-failed">FAILED</span>
-        )}
-        {previewStatus && previewRunning && (
-          <span className="monitor-status-text">· Health: {previewStatus.health}</span>
         )}
 
         <span className="monitor-titlebar-spacer" />
@@ -115,25 +111,12 @@ export default function LivePreviewCard({
               </div>
               <div className="monitor-overlay-bl">
                 {previewModeLabel(config.preview.input_mode)}
-                {previewStatus && ` · ${previewStatus.health}`}
               </div>
             </>
           )}
         </div>
       </div>
 
-      {/* Status bar */}
-      {previewRunning && previewStatus && (
-        <div className="monitor-statusbar">
-          <span>PID {previewStatus.pid}</span>
-          <span className="monitor-statusbar-sep">·</span>
-          <span>{config.preview.input_mode}</span>
-          <span className="monitor-statusbar-sep">·</span>
-          <span style={{ color: previewStatus.health === 'healthy' ? '#22c55e' : previewStatus.health === 'down' ? '#ef4444' : '#aaa' }}>
-            {previewStatus.health}
-          </span>
-        </div>
-      )}
     </div>
   )
 }

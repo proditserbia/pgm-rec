@@ -79,13 +79,68 @@ class Settings(BaseSettings):
     # Small buffer between stop and start during auto-restart.
     restart_pre_delay_seconds: float = 2.0
 
-    # File mover (1_record → 2_chunks)
+    # File mover (1_record → 2_chunks) — DEPRECATED: use segment_indexer instead.
+    # These settings are retained for backward compatibility with legacy channel
+    # configs that still use the 1_record/2_chunks pipeline.
     file_mover_interval_seconds: int = 30
     # A file must be at least this many seconds old before it is moved
     # (guards against moving a file FFmpeg is still writing)
     file_mover_min_age_seconds: int = 30
     # Phase 1.6 — double-check: time (seconds) between the two size reads
     file_mover_stability_check_seconds: float = 1.0
+
+    # Phase 23 — Segment Indexer (replaces file_mover for date-folder channels)
+    # How often the indexer runs (seconds).
+    segment_indexer_interval_seconds: int = 15
+    # A file must be at least this many seconds old before it is indexed.
+    segment_indexer_min_age_seconds: int = 30
+    # Time (seconds) between the two size reads for stability check.
+    segment_indexer_stability_check_seconds: float = 1.0
+    # Minimum ffprobe duration (seconds) — segments shorter than this are skipped.
+    segment_indexer_min_duration_seconds: float = 1.0
+
+    # Phase 24 — Daily Archive Export
+    # When enabled, a scheduled job creates a 24-hour archive file for each
+    # configured channel once per day, using the manifest DB to concatenate
+    # completed segments into a single output file.
+    #
+    # The archive for a given calendar day is triggered at ``daily_archive_time``
+    # (HH:MM) in the ``daily_archive_timezone`` timezone.  The previous calendar
+    # day in that timezone is always archived — so a trigger at 00:30 Belgrade
+    # time on 2026-04-06 archives 2026-04-05.
+    #
+    # Output naming:  ``{channel.name} {YYYYMMDD} 00-24.mp4``
+    # Output folder priority:
+    #   1. ``daily_archive_dir`` (if set)
+    #   2. ``paths.final_dir`` of the channel (if configured)
+    #   3. ``{paths.record_root}/archive`` (if record_root is configured)
+    #   4. ``{exports_dir}/{channel_id}/archive`` (fallback)
+    daily_archive_enabled: bool = False
+    # Time of day (HH:MM) in daily_archive_timezone when the job triggers.
+    daily_archive_time: str = "00:30"
+    # "all" or a comma-separated list of channel IDs to include.
+    daily_archive_channels: str = "all"
+    # IANA timezone name used to determine "yesterday" (should match the
+    # channel timezone so manifest_date values align correctly).
+    daily_archive_timezone: str = "Europe/Belgrade"
+    # Override output directory for all channels.  Empty = auto-detect per channel.
+    daily_archive_dir: str = ""
+
+    # Phase 25 — Recording Retention Cleanup (raw segment files)
+    # When True (default), the retention scheduler will delete old raw recording
+    # segment files from date-folder channels (and legacy 3_final channels).
+    # This is separate from export retention (export_retention_days).
+    # Set to False to globally disable all recording segment deletion.
+    recording_retention_enabled: bool = True
+    # Global default retention period for raw recording segments (days).
+    # Per-channel ``retention.days`` in the channel JSON config always takes
+    # priority over this setting.  This acts as a system-wide fallback.
+    recording_retention_days: int = 30
+    # Phase 25 — when True, deleted segment files are also marked in the DB:
+    #   SegmentRecord.file_exists = False, SegmentRecord.deleted_at = <now>
+    # Manifests and SegmentRecord rows are never physically removed; only the
+    # two new marker columns are updated so the audit trail is preserved.
+    prune_segment_db_after_delete: bool = False
 
     # Retention cleaner
     retention_run_interval_seconds: int = 3600  # once per hour
@@ -328,3 +383,37 @@ def resolve_channel_path(path_str: str) -> Path:
         Path.cwd(),
     )
     return p.resolve()
+
+
+def resolve_date_folder(
+    record_root: str,
+    date_folder_format: str = "%Y_%m_%d",
+    date=None,
+) -> Path:
+    """
+    Resolve the date-based sub-folder path for a channel under *record_root*.
+
+    Returns ``{record_root}/{date_str}/`` where ``date_str`` is produced by
+    applying *date_folder_format* (strftime) to *date*.  When *date* is
+    ``None`` today's date is used.
+
+    The directory is **not** created here — call ``.mkdir(parents=True,
+    exist_ok=True)`` on the returned path if creation is needed.
+
+    Parameters
+    ----------
+    record_root : str
+        Channel recording root path (resolved via
+        :func:`resolve_channel_path`).
+    date_folder_format : str
+        strftime pattern for the sub-folder name (default ``"%Y_%m_%d"``).
+    date : datetime.date | None
+        Target date; uses today when ``None``.
+    """
+    import datetime as _dt
+
+    if date is None:
+        date = _dt.date.today()
+    folder_name = date.strftime(date_folder_format)
+    root = resolve_channel_path(record_root)
+    return root / folder_name

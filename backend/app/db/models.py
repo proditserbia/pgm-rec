@@ -156,6 +156,11 @@ class SegmentRecord(Base):
     never_expires: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     has_freeze: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     has_silence: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Phase 25 — recording retention markers (file is never removed from DB)
+    # file_exists=False means the segment file was deleted by the retention cleaner.
+    file_exists: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Timestamp when the file was deleted (UTC); None = file has not been deleted.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     channel: Mapped["Channel"] = relationship(back_populates="segment_records")
 
@@ -221,6 +226,8 @@ class ExportJob(Base):
     postroll_seconds: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     # Phase 7 — preservation flag; if True, retention cleanup skips this job's output
     never_expires: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Phase 24 — job origin: "manual" (user-created) | "daily_archive" (system-created)
+    job_source: Mapped[str] = mapped_column(String(32), default="manual", nullable=False)
 
 
 class User(Base):
