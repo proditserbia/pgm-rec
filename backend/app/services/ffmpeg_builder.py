@@ -4,7 +4,7 @@ FFmpeg command builder for PGMRec.
 Translates a ChannelConfig into a subprocess-safe argument list.
 Always use shell=False with the returned list — never join into a shell string.
 
-Replicates record_rts1.bat behavior exactly:
+Recording uses date-based folder layout (Phase 23+):
 
   C:\\AutoRec\\ffmpeg\\bin\\ffmpeg.exe
     -f dshow -video_size 720x576 -framerate 25
@@ -14,7 +14,7 @@ Replicates record_rts1.bat behavior exactly:
     -f stream_segment -segment_time 00:05:00
     -segment_atclocktime 1 -reset_timestamps 1 -strftime 1
     -c:v libx264 -preset veryfast
-    D:\\AutoRec\\record\\rts1\\1_record\\%d%m%y-%H%M%S.mp4
+    D:\\AutoRec\\record\\rts1\\%Y_%m_%d\\%d%m%y-%H%M%S.mp4
 
 Filter chain order (matches bat): drawtext → scale → yadif
 
@@ -225,9 +225,9 @@ def _output_pattern(config: ChannelConfig) -> str:
     """
     Build the strftime output path pattern for the stream_segment muxer.
 
-    Phase 23 — date-folder mode:
-        When ``paths.record_root`` is set and ``use_date_folders`` is True,
-        the pattern includes a date sub-folder:
+    Phase 23+ — date-folder mode (required):
+        ``paths.record_root`` must be set.  The pattern includes a date
+        sub-folder so FFmpeg creates a new folder each day:
 
             {record_root}/{date_folder_format}/{filename_pattern}.mp4
 
@@ -236,12 +236,6 @@ def _output_pattern(config: ChannelConfig) -> str:
         run-time.  The caller must ensure the date folder for today (and
         tomorrow) already exists before FFmpeg starts, because
         ``stream_segment`` does **not** create intermediate directories.
-
-    Legacy mode:
-        When only ``paths.record_dir`` is set, the pattern is the flat path
-        used in Phases 1–22:
-
-            {record_dir}/{filename_pattern}.mp4
     """
     seg = config.segmentation
     paths = config.paths
@@ -253,9 +247,11 @@ def _output_pattern(config: ChannelConfig) -> str:
         date_pattern = paths.date_folder_format  # e.g. "%Y_%m_%d"
         return str(root / date_pattern / f"{seg.filename_pattern}.mp4")
 
-    # Legacy: flat record_dir
-    record_dir = resolve_channel_path(config.paths.record_dir or "")
-    return str(record_dir / f"{seg.filename_pattern}.mp4")
+    logger.warning(
+        "[ffmpeg-builder] Channel has no record_root configured. "
+        "Legacy record_dir is not supported. Cannot build output path."
+    )
+    return ""
 
 
 def ensure_date_folders(config: ChannelConfig, dates=None) -> list[Path]:

@@ -369,9 +369,9 @@ def _ensure_date_folders_on_startup(db) -> None:
 
 def _warn_legacy_paths(db) -> None:
     """
-    Phase 23 — log a WARNING for any channel that still uses the legacy
-    ``record_dir`` / ``chunks_dir`` pipeline rather than the new
-    ``record_root`` date-folder mode.
+    Log a WARNING for any channel whose config still contains the legacy
+    ``record_dir`` / ``chunks_dir`` fields.  These fields are ignored — the
+    system uses only ``record_root`` (date-folder mode).
     """
     channels = db.query(Channel).filter(Channel.enabled.is_(True)).all()
     for ch in channels:
@@ -380,18 +380,67 @@ def _warn_legacy_paths(db) -> None:
             if (
                 config.paths.record_dir is not None
                 or config.paths.chunks_dir is not None
-            ) and not config.paths.effective_use_date_folders:
+            ):
                 logger.warning(
-                    "Channel '%s': legacy 1_record/2_chunks mode detected "
-                    "(paths.record_dir=%r, paths.chunks_dir=%r). "
-                    "Prefer paths.record_root with date folders. "
-                    "See README for migration instructions.",
+                    "Channel '%s': legacy recording paths detected but ignored. "
+                    "Using record_root. "
+                    "Remove paths.record_dir and paths.chunks_dir from the channel config.",
                     ch.id,
-                    config.paths.record_dir,
-                    config.paths.chunks_dir,
                 )
         except Exception:
             pass
+
+
+def _cleanup_legacy_folders_on_startup(db) -> None:
+    """
+    Safe cleanup of legacy ``1_record`` / ``2_chunks`` folders under each
+    channel's ``record_root``.
+
+    - If the folder exists AND is empty  → remove it and log INFO.
+    - If the folder exists AND is not empty → log WARNING, do not delete.
+    """
+    from pathlib import Path
+    from .config.settings import resolve_channel_path
+
+    _LEGACY_NAMES = ("1_record", "2_chunks")
+
+    channels = db.query(Channel).filter(Channel.enabled.is_(True)).all()
+    for ch in channels:
+        try:
+            config = ChannelConfig.model_validate_json(ch.config_json)
+            if not config.paths.record_root:
+                continue
+            root = resolve_channel_path(config.paths.record_root)
+            for name in _LEGACY_NAMES:
+                folder = root / name
+                if not folder.exists():
+                    continue
+                try:
+                    contents = list(folder.iterdir())
+                except OSError:
+                    continue
+                if not contents:
+                    try:
+                        folder.rmdir()
+                        logger.info(
+                            "Removed empty legacy folder '%s' for channel '%s'.",
+                            folder, ch.id,
+                        )
+                    except OSError as exc:
+                        logger.warning(
+                            "Could not remove legacy folder '%s' for channel '%s': %s",
+                            folder, ch.id, exc,
+                        )
+                else:
+                    logger.warning(
+                        "Legacy folder '%s' for channel '%s' is not empty — "
+                        "remove it manually after verifying its contents.",
+                        folder, ch.id,
+                    )
+        except Exception:
+            logger.exception(
+                "Legacy folder cleanup failed for channel '%s'.", ch.id
+            )
 
 
 # ─── Application lifecycle ────────────────────────────────────────────────────
@@ -450,14 +499,20 @@ async def lifespan(app: FastAPI):
     with SessionLocal() as db:
         get_process_manager().reconcile_on_startup(db)
 
-    # Phase 23 — Pre-create today's + tomorrow's date folders for all channels
+    # Pre-create today's + tomorrow's date folders for all channels
     # using date-folder mode so FFmpeg can start immediately.
     with SessionLocal() as db:
         _ensure_date_folders_on_startup(db)
 
-    # Phase 23 — Warn for legacy 1_record/2_chunks channels
+    # Log the recording layout and warn about any legacy path fields in configs.
+    logger.info("Using date-based recording layout")
+    logger.info("Legacy folders disabled")
     with SessionLocal() as db:
         _warn_legacy_paths(db)
+
+    # Clean up empty legacy 1_record / 2_chunks folders under record_root.
+    with SessionLocal() as db:
+        _cleanup_legacy_folders_on_startup(db)
 
     # ── Watchdog — independent asyncio Task ───────────────────────────────
     # Runs its own interval loop, completely decoupled from the shared
@@ -478,16 +533,15 @@ async def lifespan(app: FastAPI):
     export_worker = get_export_worker()
     export_worker.start()
 
-    # ── Shared scheduler: segment_indexer + file_mover (legacy) + retention ─
+    # ── Shared scheduler: segment_indexer + file_mover + retention ───────────
     scheduler = get_scheduler()
-    # Phase 23: segment_indexer handles date-folder channels.
+    # segment_indexer handles date-folder channels.
     scheduler.add(
         "segment_indexer",
         settings.segment_indexer_interval_seconds,
         run_segment_indexer,
     )
-    # Legacy file_mover kept for backward-compat with 1_record/2_chunks channels.
-    # It self-skips channels that already use record_root.
+    # file_mover skips all date-folder channels; warns about any legacy configs.
     scheduler.add(
         "file_mover",
         settings.file_mover_interval_seconds,

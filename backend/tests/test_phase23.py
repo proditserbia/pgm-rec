@@ -5,7 +5,7 @@ Covers:
 - PathConfig: record_root field accepted; old fields become Optional
 - PathConfig: effective_use_date_folders auto-detection (record_root only → True)
 - PathConfig: effective_use_date_folders explicit override
-- PathConfig: use_date_folders=False when only record_dir set
+- PathConfig: use_date_folders=False when only record_dir set (no record_root)
 - PathConfig: legacy fields still accepted alongside record_root
 - PathConfig: date_folder_format default is "%Y_%m_%d"
 - Settings: segment_indexer_interval_seconds field exists
@@ -16,7 +16,7 @@ Covers:
 - resolve_date_folder: uses today when date=None
 - resolve_date_folder: respects custom date_folder_format
 - _output_pattern (new mode): uses record_root + date_folder_format
-- _output_pattern (legacy mode): falls back to record_dir
+- _output_pattern (no record_root): returns "" (legacy paths ignored)
 - ensure_date_folders: creates today + tomorrow folders
 - ensure_date_folders: no-op for legacy channels
 - ensure_date_folders: returns created paths
@@ -47,12 +47,12 @@ Covers:
 - _find_newer_in_date_folders: returns newer segment
 - _find_newer_in_date_folders: returns None when nothing newer
 - _latest_usable_segment_for_config: date-folder mode
-- _latest_usable_segment_for_config: legacy mode
+- _latest_usable_segment_for_config: returns None when no record_root
 - _newer_segment_for_config: date-folder mode
-- _newer_segment_for_config: legacy mode
+- _newer_segment_for_config: returns None when no record_root
 - file_mover: skips date-folder channels
-- file_mover: processes legacy channels
-- warn_legacy_paths: warning for record_dir only channels
+- file_mover: skips legacy channels (record_dir/chunks_dir ignored, warns)
+- warn_legacy_paths: warning for channels with record_dir/chunks_dir
 - rts1.json Phase 23: record_root field present
 - rts1.json Phase 23: effective_use_date_folders is True
 - rts1.json Phase 23: output pattern contains date pattern
@@ -267,15 +267,15 @@ class TestOutputPattern:
         assert "%Y_%m_%d" in pattern
         assert "%d%m%y-%H%M%S" in pattern
 
-    def test_legacy_mode_uses_record_dir(self, tmp_path):
+    def test_no_record_root_returns_empty(self, tmp_path):
+        """When record_root is absent, _output_pattern returns "" (legacy paths ignored)."""
         cfg = _make_channel_config(
             record_dir=str(tmp_path / "1_record"),
             chunks_dir=str(tmp_path / "2_chunks"),
             final_dir=str(tmp_path / "3_final"),
         )
         pattern = _output_pattern(cfg)
-        assert "1_record" in pattern
-        assert "%Y_%m_%d" not in pattern
+        assert pattern == ""
 
     def test_new_mode_custom_date_format(self, tmp_path):
         cfg = _make_channel_config(
@@ -805,20 +805,15 @@ class TestHlsPreviewDateFolders:
         result = _latest_usable_segment_for_config(cfg)
         assert result == f1
 
-    def test_latest_usable_segment_for_config_legacy(self, tmp_path):
-        record = tmp_path / "1_record"
-        chunks = tmp_path / "2_chunks"
-        record.mkdir()
-        chunks.mkdir()
-        f1 = self._make_mp4(record / "seg1.mp4", age_secs=300)
-        self._make_mp4(record / "seg2.mp4", age_secs=10)  # active
+    def test_latest_usable_segment_for_config_no_record_root_returns_none(self, tmp_path):
+        """When record_root is absent, _latest_usable_segment_for_config returns None."""
         cfg = _make_channel_config(
-            record_dir=str(record),
-            chunks_dir=str(chunks),
+            record_dir=str(tmp_path / "1_record"),
+            chunks_dir=str(tmp_path / "2_chunks"),
             final_dir=str(tmp_path / "3_final"),
         )
         result = _latest_usable_segment_for_config(cfg)
-        assert result == f1
+        assert result is None
 
     def test_newer_segment_for_config_date_mode(self, tmp_path):
         folder = tmp_path / "2026_04_05"
@@ -830,21 +825,18 @@ class TestHlsPreviewDateFolders:
         result = _newer_segment_for_config(current, cfg)
         assert result == newer
 
-    def test_newer_segment_for_config_legacy(self, tmp_path):
+    def test_newer_segment_for_config_no_record_root_returns_none(self, tmp_path):
+        """When record_root is absent, _newer_segment_for_config returns None."""
         record = tmp_path / "1_record"
-        chunks = tmp_path / "2_chunks"
         record.mkdir()
-        chunks.mkdir()
         current = self._make_mp4(record / "seg1.mp4", age_secs=300)
-        newer = self._make_mp4(record / "seg2.mp4", age_secs=120)
-        self._make_mp4(record / "seg3.mp4", age_secs=10)  # active
         cfg = _make_channel_config(
             record_dir=str(record),
-            chunks_dir=str(chunks),
+            chunks_dir=str(tmp_path / "2_chunks"),
             final_dir=str(tmp_path / "3_final"),
         )
         result = _newer_segment_for_config(current, cfg)
-        assert result == newer
+        assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -881,7 +873,8 @@ class TestFileMoverSkipLogic:
 
         mock_move.assert_not_called()
 
-    def test_processes_legacy_channel(self, tmp_path):
+    def test_skips_legacy_channel_with_warning(self, tmp_path):
+        """Legacy record_dir/chunks_dir channels are skipped (no move), with a WARNING."""
         from app.services.file_mover import _run_file_mover_sync
 
         (tmp_path / "1_rec").mkdir()
@@ -915,7 +908,7 @@ class TestFileMoverSkipLogic:
         ):
             _run_file_mover_sync()
 
-        mock_move.assert_called_once()
+        mock_move.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

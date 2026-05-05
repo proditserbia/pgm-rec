@@ -120,17 +120,17 @@ def test_rts2_config_parses():
     assert config.id == "rts2"
     assert config.preview.port == 23002
     assert config.preview.fps == 5
-    # Path string must reference the rts2 subdirectory and 1_record stage
-    assert "rts2" in config.paths.record_dir
-    assert "1_record" in config.paths.record_dir
+    # Path string must reference the rts2 subdirectory (date-folder mode)
+    assert "rts2" in config.paths.record_root
+    assert config.paths.record_dir is None
 
 
 def test_rts3_config_parses():
     config = _load_channel_config("rts3.json")
     assert config.id == "rts3"
     assert config.preview.port == 23003
-    assert "rts3" in config.paths.record_dir
-    assert "1_record" in config.paths.record_dir
+    assert "rts3" in config.paths.record_root
+    assert config.paths.record_dir is None
 
 
 def test_rts_test_config_parses():

@@ -91,9 +91,7 @@ def _base_config(
         display_name="RTS1 Test",
         capture={"device_type": "dshow"},
         paths={
-            "record_dir": "/tmp/rec",
-            "chunks_dir": "/tmp/chunks",
-            "final_dir": "/tmp/final",
+            "record_root": "/tmp/rec",
         },
         recording_preview_output=RecordingPreviewOutputConfig(**kwargs),
         preview=PreviewConfig(input_mode=input_mode),
@@ -209,7 +207,7 @@ def test_build_ffmpeg_command_rpo_none_no_filter_complex():
         name="RTS1",
         display_name="RTS1 Test",
         capture={"device_type": "dshow"},
-        paths={"record_dir": "/tmp/rec", "chunks_dir": "/tmp/chunks", "final_dir": "/tmp/final"},
+        paths={"record_root": "/tmp/rec"},
     )
     cmd = build_ffmpeg_command(cfg)
     assert "-filter_complex" not in cmd
@@ -432,7 +430,7 @@ def test_start_hls_direct_raises_when_rpo_none(tmp_path):
     cfg = ChannelConfig(
         id="rts1", name="RTS1", display_name="RTS1 Test",
         capture={"device_type": "dshow"},
-        paths={"record_dir": "/tmp/rec", "chunks_dir": "/tmp/chunks", "final_dir": "/tmp/final"},
+        paths={"record_root": "/tmp/rec"},
         preview=PreviewConfig(input_mode="hls_direct"),
     )
     mgr = HlsPreviewManager()

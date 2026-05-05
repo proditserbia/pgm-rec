@@ -27,7 +27,7 @@ import shutil
 import time
 from pathlib import Path
 
-from ..config.settings import get_settings, resolve_channel_path
+from ..config.settings import resolve_channel_path
 from ..db.models import Channel
 from ..db.session import get_session_factory
 from ..models.schemas import ChannelConfig
@@ -160,26 +160,16 @@ def _move_completed_files(
 
 def _run_file_mover_sync() -> None:
     """
-    Iterate all channels and move completed files.
+    Iterate all channels.
 
     Called via asyncio.to_thread so file I/O doesn't block the event loop.
-    After each successful move, the segment is registered in the manifest (Phase 2A).
 
-    Phase 23: channels that use the new date-folder mode (``paths.record_root``
-    configured) are skipped here — the ``segment_indexer`` service handles
-    registration for those channels.  A DEBUG message is emitted for each
-    skipped channel so operators can confirm the transition.  A WARNING is
-    emitted the first time this function actually moves a file, reminding
-    operators that the legacy pipeline is still active.
+    All channels using ``paths.record_root`` (date-folder mode) are handled by
+    the ``segment_indexer`` service.  Channels that still have legacy
+    ``record_dir``/``chunks_dir`` configured are skipped with a WARNING —
+    those paths are no longer supported.  Migrate to ``paths.record_root``.
     """
-    from .manifest_service import register_segment  # local import to avoid circular deps
-
-    settings = get_settings()
-    min_age = float(settings.file_mover_min_age_seconds)
-    stability = float(settings.file_mover_stability_check_seconds)
     SessionLocal = get_session_factory()
-    total_moved = 0
-    legacy_channels = 0
 
     with SessionLocal() as db:
         channels = db.query(Channel).filter(Channel.enabled.is_(True)).all()
@@ -187,7 +177,7 @@ def _run_file_mover_sync() -> None:
             try:
                 config = ChannelConfig.model_validate_json(ch.config_json)
 
-                # Phase 23 — skip date-folder channels (handled by segment_indexer)
+                # Skip date-folder channels (handled by segment_indexer)
                 if config.paths.effective_use_date_folders:
                     logger.debug(
                         "[file_mover][%s] Skipping — channel uses date-folder mode "
@@ -196,7 +186,8 @@ def _run_file_mover_sync() -> None:
                     )
                     continue
 
-                # Legacy channel — needs record_dir and chunks_dir
+                # Legacy channel — record_dir/chunks_dir are no longer supported.
+                # Log a warning and skip. Migrate to paths.record_root.
                 if not config.paths.record_dir or not config.paths.chunks_dir:
                     logger.debug(
                         "[file_mover][%s] Skipping — no record_dir/chunks_dir configured.",
@@ -204,34 +195,13 @@ def _run_file_mover_sync() -> None:
                     )
                     continue
 
-                legacy_channels += 1
-                record_dir = resolve_channel_path(config.paths.record_dir)
-                chunks_dir = resolve_channel_path(config.paths.chunks_dir)
-                moved_paths = _move_completed_files(record_dir, chunks_dir, min_age, stability)
-                total_moved += len(moved_paths)
-                # Phase 2A: register each moved segment in manifest + DB
-                for dest_path in moved_paths:
-                    try:
-                        register_segment(ch.id, dest_path, config, db)
-                    except Exception:
-                        logger.exception(
-                            "[file_mover][%s] Manifest registration failed for '%s'.",
-                            ch.id, dest_path.name,
-                        )
+                logger.warning(
+                    "[file_mover][%s] Legacy record_dir/chunks_dir detected but ignored. "
+                    "Migrate to paths.record_root (date-folder mode). Skipping.",
+                    ch.id,
+                )
             except Exception:
                 logger.exception("[file_mover][%s] Error processing channel.", ch.id)
-
-    if total_moved:
-        logger.warning(
-            "[file_mover] Moved %d file(s) from %d legacy channel(s). "
-            "⚠️  DEPRECATED: migrate to paths.record_root (date-folder mode) "
-            "to eliminate the move step and use segment_indexer instead.",
-            total_moved, legacy_channels,
-        )
-    elif legacy_channels:
-        logger.debug(
-            "[file_mover] %d legacy channel(s) checked — nothing to move.", legacy_channels
-        )
 
 
 async def run_file_mover() -> None:
