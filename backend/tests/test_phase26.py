@@ -136,6 +136,19 @@ class TestHasLegacyChannels:
         with SessionLocal() as db:
             assert _has_legacy_channels(db) is True
 
+    def test_record_dir_alone_counts_as_legacy(self):
+        """record_dir present without chunks_dir also triggers legacy detection."""
+        cfg = {
+            "id": "partial_legacy2",
+            "name": "PL2",
+            "display_name": "PL2",
+            "capture": {"device_type": "dshow"},
+            "paths": {"record_dir": "/tmp/1_rec"},
+        }
+        SessionLocal = _make_db([cfg])
+        with SessionLocal() as db:
+            assert _has_legacy_channels(db) is True
+
 
 # ---------------------------------------------------------------------------
 # Scheduler registration
