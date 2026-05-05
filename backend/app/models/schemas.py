@@ -519,8 +519,8 @@ class ChannelDiagnosticsResponse(BaseModel):
     input_specifier: str
     resolution: str
     framerate: int
-    # Record directory
-    record_dir: str
+    # Record directory (today's date folder for date-based layout, or legacy record_dir)
+    record_dir: Optional[str] = None
     # Latest segment on disk (in record_dir)
     latest_segment_path: Optional[str] = None
     latest_segment_size_bytes: Optional[int] = None

@@ -18,7 +18,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from ...config.settings import get_settings, resolve_channel_path
+from ...config.settings import get_settings, resolve_channel_path, resolve_date_folder
 from ...db.models import Channel, SegmentAnomaly, WatchdogEvent
 from ...db.session import get_db
 from ...models.schemas import (
@@ -79,10 +79,28 @@ def _channel_health_response(ch: Channel, db: Session) -> ChannelHealthResponse:
     )
 
 
-def _newest_mp4_mtime(record_dir: str) -> datetime | None:
-    """Return the mtime of the newest *.mp4 in *record_dir* as a UTC datetime."""
-    d = resolve_channel_path(record_dir)
-    if not d.exists():
+def _resolve_active_record_dir(paths) -> "Path | None":
+    """
+    Return the active recording directory for *paths* as a resolved ``Path``.
+
+    * Date-based layout (Phase 23+): ``{record_root}/{today}/``
+    * Legacy layout: ``paths.record_dir`` resolved via
+      :func:`resolve_channel_path`.
+
+    Returns ``None`` when neither is configured.
+    """
+    from pathlib import Path as _Path
+    if paths.effective_use_date_folders and paths.record_root:
+        return resolve_date_folder(paths.record_root, paths.date_folder_format)
+    if paths.record_dir:
+        return resolve_channel_path(paths.record_dir)
+    return None
+
+
+def _newest_mp4_mtime(paths) -> datetime | None:
+    """Return the mtime of the newest *.mp4 in the active recording directory."""
+    d = _resolve_active_record_dir(paths)
+    if d is None or not d.exists():
         return None
     try:
         mp4s = list(d.glob("*.mp4"))
@@ -155,7 +173,7 @@ def get_channel_debug(channel_id: str, db: DbDep, _: AdminDep):
 
     # Derive last_segment_time from the filesystem (independent of stall state)
     config = ChannelConfig.model_validate_json(ch.config_json)
-    last_segment_time = _newest_mp4_mtime(config.paths.record_dir)
+    last_segment_time = _newest_mp4_mtime(config.paths)
 
     # Stall info
     stall_secs = pm.get_stall_seconds(channel_id)
