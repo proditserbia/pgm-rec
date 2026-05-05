@@ -42,10 +42,7 @@
     "filename_pattern": "%d%m%y-%H%M%S"
   },
   "paths": {
-    "record_root": "D:\\AutoRec\\record\\rts3",
-    "record_dir": "D:\\AutoRec\\record\\rts3\\1_record",
-    "chunks_dir": "D:\\AutoRec\\record\\rts3\\2_chunks",
-    "final_dir": "D:\\AutoRec\\record\\rts3\\3_final"
+    "record_root": "D:\\AutoRec\\record\\rts3"
   },
   "retention": {
     "enabled": true,

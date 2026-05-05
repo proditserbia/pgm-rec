@@ -794,22 +794,20 @@ def test_manager_start_from_recording_output_immediate(tmp_path):
     cfg = _make_channel_config()
     cfg.preview.input_mode = "from_recording_output"
 
-    record_dir = tmp_path / "1_record"
-    record_dir.mkdir(parents=True)
-    chunks_dir = tmp_path / "2_chunks"
-    chunks_dir.mkdir(parents=True)
-    cfg.paths.record_dir = str(record_dir)
-    cfg.paths.chunks_dir = str(chunks_dir)
-    cfg.paths.final_dir = str(tmp_path / "3_final")
+    record_root = tmp_path / "records"
+    record_root.mkdir()
+    date_folder = record_root / "2026_05_05"
+    date_folder.mkdir(parents=True)
+    cfg.paths.record_root = str(record_root)
 
     manager = HlsPreviewManager()
     mock_proc = _mock_process()
 
     # Two files: newest = "currently recording", second = usable
-    old_seg = record_dir / "old.mp4"
+    old_seg = date_folder / "old.mp4"
     old_seg.write_bytes(b"old")
     time.sleep(0.05)
-    (record_dir / "current.mp4").write_bytes(b"current")
+    (date_folder / "current.mp4").write_bytes(b"current")
 
     with patch("app.services.hls_preview_manager.get_settings") as mock_settings, \
          patch("subprocess.Popen", return_value=mock_proc):
@@ -865,13 +863,11 @@ def test_manager_check_all_starts_pending_when_segment_appears(tmp_path):
     cfg = _make_channel_config()
     cfg.preview.input_mode = "from_recording_output"
 
-    record_dir = tmp_path / "1_record"
-    record_dir.mkdir(parents=True)
-    chunks_dir = tmp_path / "2_chunks"
-    chunks_dir.mkdir(parents=True)
-    cfg.paths.record_dir = str(record_dir)
-    cfg.paths.chunks_dir = str(chunks_dir)
-    cfg.paths.final_dir = str(tmp_path / "3_final")
+    record_root = tmp_path / "records"
+    record_root.mkdir()
+    date_folder = record_root / "2026_05_05"
+    date_folder.mkdir(parents=True)
+    cfg.paths.record_root = str(record_root)
 
     manager = HlsPreviewManager()
     mock_proc = _mock_process()
@@ -886,16 +882,16 @@ def test_manager_check_all_starts_pending_when_segment_appears(tmp_path):
         settings.recording_root = None
         mock_settings.return_value = settings
 
-        # Start with empty dirs → pending
+        # Start with empty date folder → pending
         manager.start_preview("rts1", cfg)
         assert "rts1" in manager._pending_file_mode
         assert "rts1" not in manager._previews
 
         # A segment appears
-        old_seg = record_dir / "old.mp4"
+        old_seg = date_folder / "old.mp4"
         old_seg.write_bytes(b"old")
         time.sleep(0.05)
-        (record_dir / "current.mp4").write_bytes(b"current")
+        (date_folder / "current.mp4").write_bytes(b"current")
 
         # Watchdog picks it up
         manager.check_all()
@@ -912,23 +908,21 @@ def test_manager_check_all_switches_to_newer_file(tmp_path):
     cfg = _make_channel_config()
     cfg.preview.input_mode = "from_recording_output"
 
-    record_dir = tmp_path / "1_record"
-    record_dir.mkdir(parents=True)
-    chunks_dir = tmp_path / "2_chunks"
-    chunks_dir.mkdir(parents=True)
-    cfg.paths.record_dir = str(record_dir)
-    cfg.paths.chunks_dir = str(chunks_dir)
-    cfg.paths.final_dir = str(tmp_path / "3_final")
+    record_root = tmp_path / "records"
+    record_root.mkdir()
+    date_folder = record_root / "2026_05_05"
+    date_folder.mkdir(parents=True)
+    cfg.paths.record_root = str(record_root)
 
     manager = HlsPreviewManager()
     mock_proc_old = _mock_process()  # still "alive"
     mock_proc_new = _mock_process()
 
     # Two segments: old (usable) + currently recording
-    old_seg = record_dir / "old.mp4"
+    old_seg = date_folder / "old.mp4"
     old_seg.write_bytes(b"old")
     time.sleep(0.05)
-    (record_dir / "current.mp4").write_bytes(b"current")
+    (date_folder / "current.mp4").write_bytes(b"current")
 
     popen_calls = [mock_proc_old, mock_proc_new]
 
@@ -945,10 +939,12 @@ def test_manager_check_all_switches_to_newer_file(tmp_path):
         manager.start_preview("rts1", cfg)
         assert manager._previews["rts1"].source_file == old_seg
 
-        # A newer segment appears in chunks_dir
+        # A newer completed segment appears; a still-newer file is the active recording.
         time.sleep(0.05)
-        newer_seg = chunks_dir / "newer.mp4"
+        newer_seg = date_folder / "newer.mp4"
         newer_seg.write_bytes(b"newer")
+        time.sleep(0.05)
+        (date_folder / "very_current.mp4").write_bytes(b"very_current")
 
         manager.check_all()
 

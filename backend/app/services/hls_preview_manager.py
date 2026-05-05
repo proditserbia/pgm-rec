@@ -79,34 +79,20 @@ logger = logging.getLogger(__name__)
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 
-def _resolve_record_dirs(config: ChannelConfig):
-    """
-    Return the (record_dir, chunks_dir) tuple for *config*.
-
-    Phase 23: when the channel uses date-folder mode, both values are ``None``
-    and callers should use the date-folder helpers instead.
-    """
-    paths = config.paths
-    record_dir = resolve_channel_path(paths.record_dir) if paths.record_dir else None
-    chunks_dir = resolve_channel_path(paths.chunks_dir) if paths.chunks_dir else None
-    return record_dir, chunks_dir
-
 
 def _latest_usable_segment_for_config(config: ChannelConfig) -> Optional[Path]:
     """
-    Return the latest completed segment for *config*, regardless of mode.
+    Return the latest completed segment for *config*.
 
-    Phase 23 — date-folder mode:  scans date sub-folders under ``record_root``.
-    Legacy mode:                   uses ``record_dir`` / ``chunks_dir``.
+    Scans date sub-folders under ``record_root`` (date-folder mode).
+    Returns ``None`` when ``record_root`` is not configured.
     """
     paths = config.paths
     if paths.effective_use_date_folders and paths.record_root:
         record_root = resolve_channel_path(paths.record_root)
         return _find_latest_in_date_folders(record_root)
 
-    record_dir = resolve_channel_path(paths.record_dir) if paths.record_dir else Path("")
-    chunks_dir = resolve_channel_path(paths.chunks_dir) if paths.chunks_dir else Path("")
-    return _find_latest_usable_segment(record_dir, chunks_dir)
+    return None
 
 
 def _newer_segment_for_config(
@@ -115,17 +101,15 @@ def _newer_segment_for_config(
     """
     Return a completed segment newer than *current_file* for *config*.
 
-    Phase 23 — date-folder mode:  scans date sub-folders under ``record_root``.
-    Legacy mode:                   uses ``record_dir`` / ``chunks_dir``.
+    Scans date sub-folders under ``record_root`` (date-folder mode).
+    Returns ``None`` when ``record_root`` is not configured.
     """
     paths = config.paths
     if paths.effective_use_date_folders and paths.record_root:
         record_root = resolve_channel_path(paths.record_root)
         return _find_newer_in_date_folders(current_file, record_root)
 
-    record_dir = resolve_channel_path(paths.record_dir) if paths.record_dir else Path("")
-    chunks_dir = resolve_channel_path(paths.chunks_dir) if paths.chunks_dir else Path("")
-    return _find_newer_segment(current_file, record_dir, chunks_dir)
+    return None
 
 def _tail_file(path: Path, lines: int) -> list[str]:
     """Return the last *lines* lines of *path* without loading the whole file."""
