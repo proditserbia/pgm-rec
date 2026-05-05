@@ -738,11 +738,12 @@ class ExportJobResponse(BaseModel):
 class DiskUsageResponse(BaseModel):
     """Disk usage for the filesystem where recordings are stored."""
 
-    path: str
+    path_checked: str
     total_bytes: int
     used_bytes: int
     free_bytes: int
     percent_used: float
+    warning: Optional[str] = None
 
 
 # ─── Recording Retention — Phase 25 ─────────────────────────────────────────

@@ -221,9 +221,38 @@ def get_system_health(db: DbDep, _: AnyRoleDep):
 
 @router.get("/system/disk", response_model=DiskUsageResponse)
 def get_disk_usage(_: AnyRoleDep) -> DiskUsageResponse:
-    """Disk usage for the filesystem where recordings are stored."""
+    """Disk usage for the filesystem where recordings are stored.
+
+    Priority:
+      1. ``PGMREC_RECORDING_ROOT`` — the actual recording disk (preferred).
+      2. ``data_dir`` — application data directory (fallback when
+         ``PGMREC_RECORDING_ROOT`` is not configured).
+
+    When ``PGMREC_RECORDING_ROOT`` is set but the directory does not yet
+    exist, PGMRec attempts to create it.  If creation fails, the response
+    includes a ``warning`` field and falls back to ``data_dir``.
+    """
+    from pathlib import Path as _Path
+
     settings = get_settings()
-    disk_path = str(settings.data_dir)
+    warning: str | None = None
+
+    if settings.recording_root is not None:
+        rec_root = _Path(settings.recording_root)
+        if not rec_root.exists():
+            try:
+                rec_root.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                warning = (
+                    f"PGMREC_RECORDING_ROOT '{rec_root}' does not exist and "
+                    f"could not be created: {exc}. Disk usage reported for "
+                    f"'{settings.data_dir}' instead."
+                )
+                rec_root = None  # type: ignore[assignment]
+        disk_path = str(rec_root) if rec_root is not None else str(settings.data_dir)
+    else:
+        disk_path = str(settings.data_dir)
+
     try:
         usage = shutil.disk_usage(disk_path)
     except OSError:
@@ -234,9 +263,10 @@ def get_disk_usage(_: AnyRoleDep) -> DiskUsageResponse:
     free = usage.free
     percent = round(used / total * 100, 1) if total > 0 else 0.0
     return DiskUsageResponse(
-        path=disk_path,
+        path_checked=disk_path,
         total_bytes=total,
         used_bytes=used,
         free_bytes=free,
         percent_used=percent,
+        warning=warning,
     )

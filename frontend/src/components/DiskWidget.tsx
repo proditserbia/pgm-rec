@@ -15,7 +15,7 @@ export default function DiskWidget({ disk, error }: { disk: DiskUsageResponse | 
     disk.percent_used >= 80 ? 'disk-warn' : 'disk-ok'
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-      <span className="text-muted">Disk:</span>
+      <span className="text-muted">Disk: <span style={{ fontFamily: 'monospace', fontSize: '0.85em' }}>{disk.path_checked}</span></span>
       <div className="disk-bar-outer">
         <div className={`disk-bar-inner ${barCls}`} style={{ width: `${disk.percent_used}%` }} />
       </div>
@@ -25,6 +25,7 @@ export default function DiskWidget({ disk, error }: { disk: DiskUsageResponse | 
       </span>
       {disk.percent_used >= 90 && <span className="badge badge-error badge-pulse">⚠ DISK CRITICAL</span>}
       {disk.percent_used >= 80 && disk.percent_used < 90 && <span className="badge badge-degraded">⚠ DISK WARN</span>}
+      {disk.warning && <span className="badge badge-degraded" title={disk.warning}>⚠ DISK PATH WARN</span>}
     </div>
   )
 }
