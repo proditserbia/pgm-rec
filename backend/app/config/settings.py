@@ -356,7 +356,7 @@ def get_loaded_env_file() -> Path | None:
     return _ENV_FILE
 
 
-def resolve_channel_path(path_str: str) -> Path:
+def resolve_channel_path(path_str: Optional[str]) -> Path:
     """
     Resolve a channel recording path string to an absolute Path.
 
@@ -368,7 +368,18 @@ def resolve_channel_path(path_str: str) -> Path:
 
     - If the path is relative and ``recording_root`` is not set, it is resolved
       relative to the current working directory and a warning is emitted.
+
+    Raises :exc:`ValueError` when *path_str* is ``None`` so that callers receive a
+    clear diagnostic instead of the confusing ``TypeError`` from ``Path(None)``.
+    Always guard against ``None`` at the call site (check the optional field
+    before calling this function) rather than relying on the exception.
     """
+    if path_str is None:
+        raise ValueError(
+            "resolve_channel_path() called with None. "
+            "Check that the required path field (e.g. record_root or record_dir) "
+            "is set in the channel config."
+        )
     p = Path(path_str)
     if p.is_absolute():
         return p
