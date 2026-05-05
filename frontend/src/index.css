@@ -360,9 +360,15 @@ tr:hover td { background: #fafafa; }
 /* ── Dashboard Channel Grid ────────────────────────────────── */
 .channel-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 20px;
   margin-top: 4px;
+}
+
+@media (max-width: 768px) {
+  .channel-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ── Channel Card ─────────────────────────────────────────── */
@@ -377,10 +383,10 @@ tr:hover td { background: #fafafa; }
   transition: border-color 0.25s, box-shadow 0.25s;
 }
 
-/* LIVE: subtle green glow */
+/* LIVE: green border + glow */
 .ch-card--live {
-  border-color: #1c3a1c;
-  box-shadow: 0 0 0 1px rgba(34,197,94,0.2), 0 4px 20px rgba(0,0,0,0.45);
+  border-color: #166534;
+  box-shadow: 0 0 0 1px rgba(34,197,94,0.3), 0 4px 20px rgba(0,0,0,0.45);
 }
 
 /* STOPPED: dimmed */
@@ -504,4 +510,18 @@ tr:hover td { background: #fafafa; }
   background: #0e0e12;
   border-top: 1px solid #222;
   align-items: center;
+}
+
+/* Compact status row (health badge + uptime) */
+.ch-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.ch-uptime {
+  font-size: 11px;
+  color: #22c55e;
+  font-family: 'Courier New', monospace;
 }
