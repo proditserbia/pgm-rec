@@ -46,6 +46,7 @@ from .services.export_retention import run_export_retention
 from .services.export_worker import get_export_worker
 from .services.file_mover import run_file_mover
 from .services.segment_indexer import run_segment_indexer
+from .services.daily_archive import run_daily_archive
 from .services.preview_manager import run_preview_watchdog_loop as _mjpeg_watchdog_loop
 from .services.hls_preview_manager import run_hls_preview_watchdog_loop
 from .services.process_manager import get_process_manager
@@ -500,6 +501,12 @@ async def lifespan(app: FastAPI):
         "export_retention",
         settings.retention_run_interval_seconds,
         run_export_retention,
+    )
+    # Phase 24: daily archive export (runs every 60 s; time-gated internally).
+    scheduler.add(
+        "daily_archive",
+        60,
+        run_daily_archive,
     )
     await scheduler.start()
 

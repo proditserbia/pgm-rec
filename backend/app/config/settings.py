@@ -99,6 +99,33 @@ class Settings(BaseSettings):
     # Minimum ffprobe duration (seconds) — segments shorter than this are skipped.
     segment_indexer_min_duration_seconds: float = 1.0
 
+    # Phase 24 — Daily Archive Export
+    # When enabled, a scheduled job creates a 24-hour archive file for each
+    # configured channel once per day, using the manifest DB to concatenate
+    # completed segments into a single output file.
+    #
+    # The archive for a given calendar day is triggered at ``daily_archive_time``
+    # (HH:MM) in the ``daily_archive_timezone`` timezone.  The previous calendar
+    # day in that timezone is always archived — so a trigger at 00:30 Belgrade
+    # time on 2026-04-06 archives 2026-04-05.
+    #
+    # Output naming:  ``{channel.name} {YYYYMMDD} 00-24.mp4``
+    # Output folder priority:
+    #   1. ``daily_archive_dir`` (if set)
+    #   2. ``paths.final_dir`` of the channel (if configured)
+    #   3. ``{paths.record_root}/archive`` (if record_root is configured)
+    #   4. ``{exports_dir}/{channel_id}/archive`` (fallback)
+    daily_archive_enabled: bool = False
+    # Time of day (HH:MM) in daily_archive_timezone when the job triggers.
+    daily_archive_time: str = "00:30"
+    # "all" or a comma-separated list of channel IDs to include.
+    daily_archive_channels: str = "all"
+    # IANA timezone name used to determine "yesterday" (should match the
+    # channel timezone so manifest_date values align correctly).
+    daily_archive_timezone: str = "Europe/Belgrade"
+    # Override output directory for all channels.  Empty = auto-detect per channel.
+    daily_archive_dir: str = ""
+
     # Retention cleaner
     retention_run_interval_seconds: int = 3600  # once per hour
 

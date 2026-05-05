@@ -729,6 +729,8 @@ class ExportJobResponse(BaseModel):
     preroll_seconds: float = 0.0
     postroll_seconds: float = 0.0
     never_expires: bool = False
+    # Phase 24 — "manual" | "daily_archive"
+    job_source: str = "manual"
 
 
 # ─── System — Phase 3.5 ───────────────────────────────────────────────────────

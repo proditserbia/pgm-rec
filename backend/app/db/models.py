@@ -221,6 +221,8 @@ class ExportJob(Base):
     postroll_seconds: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     # Phase 7 — preservation flag; if True, retention cleanup skips this job's output
     never_expires: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Phase 24 — job origin: "manual" (user-created) | "daily_archive" (system-created)
+    job_source: Mapped[str] = mapped_column(String(32), default="manual", nullable=False)
 
 
 class User(Base):

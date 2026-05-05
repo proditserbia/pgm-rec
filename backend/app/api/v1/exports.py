@@ -76,6 +76,7 @@ def _job_to_response(job: ExportJob) -> ExportJobResponse:
         preroll_seconds=job.preroll_seconds,
         postroll_seconds=job.postroll_seconds,
         never_expires=job.never_expires,
+        job_source=getattr(job, "job_source", "manual"),
     )
 
 
