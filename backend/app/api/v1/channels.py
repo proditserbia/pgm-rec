@@ -364,7 +364,7 @@ def get_channel_diagnostics(channel_id: str, db: DbDep, _: AdminDep):
     Intended for in-browser admin troubleshooting of black video, device errors,
     or SDI signal issues.  Admin only.
     """
-    from ...config.settings import resolve_channel_path
+    from ...config.settings import resolve_channel_path, resolve_date_folder
     from ...services.ffmpeg_builder import _build_input_specifier
 
     ch = _get_channel_or_404(channel_id, db)
@@ -374,19 +374,26 @@ def get_channel_diagnostics(channel_id: str, db: DbDep, _: AdminDep):
     cmd = build_ffmpeg_command(config)
     cmd_str = format_command_for_log(cmd)
 
-    # Latest segment in record_dir
-    record_dir = resolve_channel_path(config.paths.record_dir)
+    # Latest segment — supports both date-based and legacy layout.
+    paths = config.paths
+    if paths.effective_use_date_folders and paths.record_root:
+        record_dir = resolve_date_folder(paths.record_root, paths.date_folder_format)
+    elif paths.record_dir:
+        record_dir = resolve_channel_path(paths.record_dir)
+    else:
+        record_dir = None
     latest_path: str | None = None
     latest_size: int | None = None
     latest_mtime: datetime | None = None
     try:
-        mp4s = sorted(record_dir.glob("*.mp4"), key=lambda f: f.stat().st_mtime, reverse=True)
-        if mp4s:
-            f = mp4s[0]
-            st = f.stat()
-            latest_path = str(f)
-            latest_size = st.st_size
-            latest_mtime = datetime.utcfromtimestamp(st.st_mtime)
+        if record_dir is not None:
+            mp4s = sorted(record_dir.glob("*.mp4"), key=lambda f: f.stat().st_mtime, reverse=True)
+            if mp4s:
+                f = mp4s[0]
+                st = f.stat()
+                latest_path = str(f)
+                latest_size = st.st_size
+                latest_mtime = datetime.utcfromtimestamp(st.st_mtime)
     except OSError:
         pass
 
@@ -413,7 +420,7 @@ def get_channel_diagnostics(channel_id: str, db: DbDep, _: AdminDep):
         input_specifier=_build_input_specifier(config),
         resolution=config.capture.resolution,
         framerate=config.capture.framerate,
-        record_dir=str(record_dir),
+        record_dir=str(record_dir) if record_dir is not None else None,
         latest_segment_path=latest_path,
         latest_segment_size_bytes=latest_size,
         latest_segment_mtime=latest_mtime,
