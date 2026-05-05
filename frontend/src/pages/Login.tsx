@@ -34,7 +34,7 @@ export default function Login() {
   return (
     <div className="login-wrap">
       <div className="login-box">
-        <h1>🎬 PGMRec</h1>
+        <h1><span className="brand-pgm">PGM</span><span className="brand-rec">Rec</span></h1>
         <p className="dev-note">Broadcast Recording System</p>
         {error && <div className="error-banner">{error}</div>}
         <form onSubmit={handleSubmit}>

@@ -22,7 +22,20 @@ body {
   top: 0;
   z-index: 100;
 }
-.nav .nav-brand { font-weight: 700; font-size: 16px; color: white; text-decoration: none; margin-right: 16px; }
+.nav .nav-brand { font-weight: 700; font-size: 16px; color: white; text-decoration: none; margin-right: 16px; letter-spacing: 0.01em; }
+.brand-pgm { color: white; }
+.brand-rec { color: #ef4444; position: relative; }
+.brand-rec::before {
+  content: '●';
+  font-size: 0.55em;
+  vertical-align: 0.25em;
+  margin-right: 2px;
+  animation: rec-dot 2s ease-in-out infinite;
+}
+@keyframes rec-dot {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.3; }
+}
 .nav a { color: #ccc; text-decoration: none; font-size: 13px; }
 .nav a:hover { color: white; }
 .nav .nav-logout {
@@ -141,6 +154,8 @@ tr:hover td { background: #fafafa; }
 .login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #1a1a2e; }
 .login-box { background: white; border-radius: 8px; padding: 32px 40px; width: 340px; text-align: center; }
 .login-box h1 { font-size: 20px; margin-bottom: 6px; color: #1a1a2e; }
+.login-box h1 .brand-pgm { color: #1a1a2e; }
+.login-box h1 .brand-rec { color: #ef4444; }
 .login-box .dev-note { font-size: 11px; color: #999; margin-bottom: 20px; }
 .login-box form { display: flex; flex-direction: column; gap: 0; }
 .login-box input { width: 100%; padding: 8px 12px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; margin-bottom: 14px; }
