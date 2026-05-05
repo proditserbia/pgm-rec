@@ -177,11 +177,14 @@ def _run_file_mover_sync() -> None:
             try:
                 config = ChannelConfig.model_validate_json(ch.config_json)
 
-                # Skip date-folder channels (handled by segment_indexer)
+                # Skip date-folder channels (handled by segment_indexer).
+                # file_mover should not be running for these channels at all;
+                # log a WARNING so it is visible if it does run unexpectedly.
                 if config.paths.effective_use_date_folders:
-                    logger.debug(
-                        "[file_mover][%s] Skipping — channel uses date-folder mode "
-                        "(record_root). Handled by segment_indexer.",
+                    logger.warning(
+                        "[file_mover][%s] Skipping — channel uses date-based layout "
+                        "(record_root). file_mover should not be scheduled for "
+                        "date-based channels. Handled by segment_indexer.",
                         ch.id,
                     )
                     continue

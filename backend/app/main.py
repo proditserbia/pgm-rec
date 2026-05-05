@@ -367,6 +367,26 @@ def _ensure_date_folders_on_startup(db) -> None:
             )
 
 
+def _has_legacy_channels(db) -> bool:
+    """
+    Return ``True`` if any enabled channel still uses the legacy
+    ``record_dir`` / ``chunks_dir`` path configuration.
+
+    Used at startup to decide whether to register the ``file_mover``
+    scheduler job.  When all channels have migrated to ``record_root``
+    (date-folder mode) the file-mover is not started at all.
+    """
+    channels = db.query(Channel).filter(Channel.enabled.is_(True)).all()
+    for ch in channels:
+        try:
+            config = ChannelConfig.model_validate_json(ch.config_json)
+            if config.paths.record_dir or config.paths.chunks_dir:
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def _warn_legacy_paths(db) -> None:
     """
     Log a WARNING for any channel whose config still contains the legacy
@@ -533,7 +553,7 @@ async def lifespan(app: FastAPI):
     export_worker = get_export_worker()
     export_worker.start()
 
-    # ── Shared scheduler: segment_indexer + file_mover + retention ───────────
+    # ── Shared scheduler: segment_indexer + retention ─────────────────────
     scheduler = get_scheduler()
     # segment_indexer handles date-folder channels.
     scheduler.add(
@@ -541,12 +561,20 @@ async def lifespan(app: FastAPI):
         settings.segment_indexer_interval_seconds,
         run_segment_indexer,
     )
-    # file_mover skips all date-folder channels; warns about any legacy configs.
-    scheduler.add(
-        "file_mover",
-        settings.file_mover_interval_seconds,
-        run_file_mover,
-    )
+    # file_mover is only registered when at least one enabled channel still
+    # uses the legacy record_dir/chunks_dir paths.  In date-based mode
+    # (record_root) the segment_indexer handles all indexing and no file
+    # moving is needed.
+    with SessionLocal() as db:
+        if _has_legacy_channels(db):
+            logger.info("File mover enabled (legacy 1_record → 2_chunks mode)")
+            scheduler.add(
+                "file_mover",
+                settings.file_mover_interval_seconds,
+                run_file_mover,
+            )
+        else:
+            logger.info("File mover disabled (date-based recording layout)")
     scheduler.add(
         "retention",
         settings.retention_run_interval_seconds,
