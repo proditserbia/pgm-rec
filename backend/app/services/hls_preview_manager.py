@@ -78,6 +78,55 @@ logger = logging.getLogger(__name__)
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
+
+def _resolve_record_dirs(config: ChannelConfig):
+    """
+    Return the (record_dir, chunks_dir) tuple for *config*.
+
+    Phase 23: when the channel uses date-folder mode, both values are ``None``
+    and callers should use the date-folder helpers instead.
+    """
+    paths = config.paths
+    record_dir = resolve_channel_path(paths.record_dir) if paths.record_dir else None
+    chunks_dir = resolve_channel_path(paths.chunks_dir) if paths.chunks_dir else None
+    return record_dir, chunks_dir
+
+
+def _latest_usable_segment_for_config(config: ChannelConfig) -> Optional[Path]:
+    """
+    Return the latest completed segment for *config*, regardless of mode.
+
+    Phase 23 — date-folder mode:  scans date sub-folders under ``record_root``.
+    Legacy mode:                   uses ``record_dir`` / ``chunks_dir``.
+    """
+    paths = config.paths
+    if paths.effective_use_date_folders and paths.record_root:
+        record_root = resolve_channel_path(paths.record_root)
+        return _find_latest_in_date_folders(record_root)
+
+    record_dir = resolve_channel_path(paths.record_dir) if paths.record_dir else Path("")
+    chunks_dir = resolve_channel_path(paths.chunks_dir) if paths.chunks_dir else Path("")
+    return _find_latest_usable_segment(record_dir, chunks_dir)
+
+
+def _newer_segment_for_config(
+    current_file: Path, config: ChannelConfig
+) -> Optional[Path]:
+    """
+    Return a completed segment newer than *current_file* for *config*.
+
+    Phase 23 — date-folder mode:  scans date sub-folders under ``record_root``.
+    Legacy mode:                   uses ``record_dir`` / ``chunks_dir``.
+    """
+    paths = config.paths
+    if paths.effective_use_date_folders and paths.record_root:
+        record_root = resolve_channel_path(paths.record_root)
+        return _find_newer_in_date_folders(current_file, record_root)
+
+    record_dir = resolve_channel_path(paths.record_dir) if paths.record_dir else Path("")
+    chunks_dir = resolve_channel_path(paths.chunks_dir) if paths.chunks_dir else Path("")
+    return _find_newer_segment(current_file, record_dir, chunks_dir)
+
 def _tail_file(path: Path, lines: int) -> list[str]:
     """Return the last *lines* lines of *path* without loading the whole file."""
     if not path or not path.exists():
@@ -223,6 +272,74 @@ def _probe_udp_stream(ffmpeg_path: str, listen_url: str, probe_seconds: int = 3)
         return False
     except OSError:
         return False
+
+
+def _find_latest_in_date_folders(record_root: Path) -> Optional[Path]:
+    """
+    Phase 23 — find the latest completed ``.mp4`` segment across today's and
+    yesterday's date sub-folders under *record_root*.
+
+    Strategy:
+    - Scans the two most-recent date sub-folders (handles midnight roll-over).
+    - Within each folder, skips the **newest** file (currently being written).
+    - Returns the most-recently-modified completed segment, or ``None`` if
+      none is available.
+    """
+    try:
+        date_folders = sorted(
+            (d for d in record_root.iterdir() if d.is_dir()),
+            reverse=True,
+        )
+    except OSError:
+        return None
+
+    best: Optional[Path] = None
+    best_mtime = 0.0
+
+    for folder in date_folders[:2]:
+        try:
+            mp4s = sorted(folder.glob("*.mp4"), key=_safe_mtime)
+            completed = mp4s[:-1]  # skip newest (currently recording)
+            if completed:
+                candidate = completed[-1]
+                mt = _safe_mtime(candidate)
+                if mt > best_mtime:
+                    best_mtime = mt
+                    best = candidate
+        except OSError:
+            continue
+
+    return best
+
+
+def _find_newer_in_date_folders(
+    current_file: Path, record_root: Path
+) -> Optional[Path]:
+    """
+    Phase 23 — return a completed segment under *record_root* that is newer
+    than *current_file*, or ``None`` if none is available yet.
+    """
+    current_mtime = _safe_mtime(current_file) if current_file.exists() else 0.0
+
+    try:
+        date_folders = sorted(
+            (d for d in record_root.iterdir() if d.is_dir()),
+            reverse=True,
+        )
+    except OSError:
+        return None
+
+    for folder in date_folders[:2]:
+        try:
+            mp4s = sorted(folder.glob("*.mp4"), key=_safe_mtime)
+            completed = mp4s[:-1]
+            for f in reversed(completed):
+                if _safe_mtime(f) > current_mtime and f != current_file:
+                    return f
+        except OSError:
+            continue
+
+    return None
 
 
 def _find_latest_usable_segment(record_dir: Path, chunks_dir: Path) -> Optional[Path]:
@@ -613,9 +730,7 @@ class HlsPreviewManager:
 
         # ── from_recording_output mode ────────────────────────────────────
         if input_mode == "from_recording_output":
-            record_dir = resolve_channel_path(config.paths.record_dir)
-            chunks_dir = resolve_channel_path(config.paths.chunks_dir)
-            source_file = _find_latest_usable_segment(record_dir, chunks_dir)
+            source_file = _latest_usable_segment_for_config(config)
             if source_file is None:
                 # No completed segment yet — queue as pending.
                 self._pending_file_mode[channel_id] = config
@@ -1154,15 +1269,13 @@ class HlsPreviewManager:
         )
         del self._previews[channel_id]
 
-        record_dir = resolve_channel_path(config.paths.record_dir)
-        chunks_dir = resolve_channel_path(config.paths.chunks_dir)
         # Try to find any newer segment; fall back to the same or latest available.
         if old_info.source_file:
-            next_file = _find_newer_segment(old_info.source_file, record_dir, chunks_dir)
+            next_file = _newer_segment_for_config(old_info.source_file, config)
         else:
             next_file = None
         if next_file is None:
-            next_file = _find_latest_usable_segment(record_dir, chunks_dir)
+            next_file = _latest_usable_segment_for_config(config)
 
         if next_file:
             try:
@@ -1204,9 +1317,7 @@ class HlsPreviewManager:
         """
         # ── Handle pending file-mode channels ─────────────────────────────
         for channel_id, config in list(self._pending_file_mode.items()):
-            record_dir = resolve_channel_path(config.paths.record_dir)
-            chunks_dir = resolve_channel_path(config.paths.chunks_dir)
-            source_file = _find_latest_usable_segment(record_dir, chunks_dir)
+            source_file = _latest_usable_segment_for_config(config)
             if source_file is not None:
                 del self._pending_file_mode[channel_id]
                 logger.info(
@@ -1255,11 +1366,7 @@ class HlsPreviewManager:
                     # Check for a newer completed segment.
                     config = self._file_mode_configs.get(channel_id)
                     if config and info.source_file:
-                        record_dir = resolve_channel_path(config.paths.record_dir)
-                        chunks_dir = resolve_channel_path(config.paths.chunks_dir)
-                        newer = _find_newer_segment(
-                            info.source_file, record_dir, chunks_dir
-                        )
+                        newer = _newer_segment_for_config(info.source_file, config)
                         if newer:
                             self._switch_to_newer_file(channel_id, config, newer)
                             continue

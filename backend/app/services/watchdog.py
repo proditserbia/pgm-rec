@@ -114,6 +114,8 @@ def _get_newest_mp4(record_dir: Path):
     """
     Return (path, mtime, size) of the newest *.mp4 file in *record_dir*, or
     (None, None, None) if the directory doesn't exist or has no mp4 files.
+
+    Legacy helper — used for flat ``1_record`` directories.
     """
     if not record_dir.exists():
         return None, None, None
@@ -126,6 +128,42 @@ def _get_newest_mp4(record_dir: Path):
         return newest, stat.st_mtime, stat.st_size
     except OSError:
         return None, None, None
+
+
+def _get_newest_mp4_in_root(record_root: Path):
+    """
+    Phase 23 — return (path, mtime, size) of the newest *.mp4 file found
+    across today's and yesterday's date sub-folders under *record_root*.
+
+    Scans up to two most-recent date folders so that a just-rolled-over
+    channel (whose new day folder may have no files yet) is not flagged as
+    unhealthy when there are still recent segments in the previous folder.
+
+    Returns (None, None, None) if no mp4 files are found.
+    """
+    if not record_root.exists():
+        return None, None, None
+    try:
+        date_folders = sorted(
+            (d for d in record_root.iterdir() if d.is_dir()),
+            reverse=True,
+        )
+    except OSError:
+        return None, None, None
+
+    # Scan the two most recent date folders
+    for folder in date_folders[:2]:
+        try:
+            mp4_files = list(folder.glob("*.mp4"))
+            if not mp4_files:
+                continue
+            newest = max(mp4_files, key=lambda f: f.stat().st_mtime)
+            stat = newest.stat()
+            return newest, stat.st_mtime, stat.st_size
+        except OSError:
+            continue
+
+    return None, None, None
 
 
 def _log_event(
@@ -259,8 +297,15 @@ async def _check_channel(
     tolerance = float(settings.watchdog_segment_tolerance_seconds)
     max_age = segment_seconds + tolerance
 
-    record_dir = resolve_channel_path(config.paths.record_dir)
-    newest_path, newest_mtime, newest_size = _get_newest_mp4(record_dir)
+    # Phase 23 — route to appropriate file-lookup helper based on config mode
+    paths = config.paths
+    if paths.effective_use_date_folders and paths.record_root:
+        record_root = resolve_channel_path(paths.record_root)
+        search_dir = record_root  # used in error messages
+        newest_path, newest_mtime, newest_size = _get_newest_mp4_in_root(record_root)
+    else:
+        search_dir = resolve_channel_path(config.paths.record_dir or "")
+        newest_path, newest_mtime, newest_size = _get_newest_mp4(search_dir)
 
     # ── Check 2: file output age ───────────────────────────────────────────
     if newest_path is None:
@@ -268,7 +313,7 @@ async def _check_channel(
         with SessionLocal() as db:
             _log_event(
                 db, channel_id, "no_new_files",
-                f"No mp4 files found in {record_dir} after {uptime_seconds:.0f}s",
+                f"No mp4 files found in {search_dir} after {uptime_seconds:.0f}s",
                 alert_type="loss_of_recording",
                 severity=2,
             )

@@ -1,5 +1,5 @@
 """
-Retention / Cleanup Service — Phase 1.5 / Phase 6.2.
+Retention / Cleanup Service — Phase 1.5 / Phase 6.2 / Phase 23.
 
 Replicates the behavior of del_rts1.bat:
 
@@ -8,8 +8,12 @@ Replicates the behavior of del_rts1.bat:
 
 Behavior:
 - Runs on a configurable interval (default hourly).
-- Deletes *.mp4 files in the channel's 3_final directory that are older than
-  retention.days (default 30 days).
+- Phase 23 (date-folder mode): deletes ``*.mp4`` files in date sub-folders
+  under ``record_root`` that are older than ``retention.days``.  Empty date
+  folders are pruned afterwards.  Files whose DB record has ``never_expires``
+  set are kept regardless of age.
+- Legacy (1_record/3_final mode): deletes ``*.mp4`` files in the channel's
+  ``3_final`` directory that are older than ``retention.days``.
 - Per-channel opt-in: skips channels with retention.enabled = False.
 - Every deletion is logged (file path, age).
 - Also cleans up old FFmpeg log files beyond the per-channel limit
@@ -30,7 +34,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from ..config.settings import get_settings, resolve_channel_path
-from ..db.models import Channel, RestartHistoryRecord, SegmentAnomaly, WatchdogEvent
+from ..db.models import Channel, RestartHistoryRecord, SegmentAnomaly, SegmentRecord, WatchdogEvent
 from ..db.session import get_session_factory
 from ..models.schemas import ChannelConfig
 from ..utils import utc_now
@@ -44,7 +48,7 @@ def _delete_old_recordings(final_dir: Path, max_age_seconds: float) -> int:
     """
     Delete *.mp4 files in *final_dir* that are older than *max_age_seconds*.
 
-    Returns the number of files deleted.
+    Returns the number of files deleted.  Used for the legacy 3_final pipeline.
     """
     if not final_dir.exists():
         return 0
@@ -69,6 +73,105 @@ def _delete_old_recordings(final_dir: Path, max_age_seconds: float) -> int:
                 logger.error("[retention] Could not delete %s: %s", mp4, exc)
 
     return deleted
+
+
+def _get_never_expires_filenames(channel_id: str) -> set[str]:
+    """Return a set of filenames whose DB record has ``never_expires=True``."""
+    SessionLocal = get_session_factory()
+    try:
+        with SessionLocal() as db:
+            rows = (
+                db.query(SegmentRecord.filename)
+                .filter(
+                    SegmentRecord.channel_id == channel_id,
+                    SegmentRecord.never_expires.is_(True),
+                )
+                .all()
+            )
+            return {row[0] for row in rows}
+    except Exception:
+        logger.exception("[retention] Could not load never_expires list for '%s'.", channel_id)
+        return set()
+
+
+def _delete_old_recordings_date_folders(
+    channel_id: str, record_root: Path, max_age_seconds: float
+) -> int:
+    """
+    Phase 23 — Delete segments in date sub-folders under *record_root* that
+    are older than *max_age_seconds*.
+
+    Respects ``never_expires``:  files whose ``SegmentRecord.never_expires``
+    DB flag is ``True`` are skipped regardless of age.
+
+    After deleting individual files, empty date folders are also removed.
+
+    Returns the number of files deleted.
+    """
+    if not record_root.exists():
+        return 0
+
+    never_expires = _get_never_expires_filenames(channel_id)
+    deleted = 0
+    now = time.time()
+
+    try:
+        date_folders = [d for d in record_root.iterdir() if d.is_dir()]
+    except OSError:
+        return 0
+
+    for folder in date_folders:
+        try:
+            mp4_files = list(folder.glob("*.mp4"))
+        except OSError:
+            continue
+
+        for mp4 in mp4_files:
+            if mp4.name in never_expires:
+                logger.debug("[retention] Keeping %s (never_expires=True).", mp4.name)
+                continue
+            try:
+                age = now - mp4.stat().st_mtime
+            except OSError:
+                continue
+            if age > max_age_seconds:
+                try:
+                    mp4.unlink()
+                    logger.info(
+                        "[retention] Deleted %s (age=%.1f days).",
+                        mp4, age / _SECONDS_PER_DAY,
+                    )
+                    deleted += 1
+                except OSError as exc:
+                    logger.error("[retention] Could not delete %s: %s", mp4, exc)
+
+    # Prune empty date folders
+    _prune_empty_date_folders(record_root)
+
+    return deleted
+
+
+def _prune_empty_date_folders(record_root: Path) -> None:
+    """
+    Remove empty date sub-folders under *record_root*.
+
+    A folder is considered empty when it contains no ``*.mp4`` files.
+    Other file types are left intact; the folder is only removed when it
+    contains no items at all.
+    """
+    try:
+        for folder in list(record_root.iterdir()):
+            if not folder.is_dir():
+                continue
+            try:
+                children = list(folder.iterdir())
+                if not children:
+                    folder.rmdir()
+                    logger.info("[retention] Removed empty date folder: %s", folder)
+            except OSError as exc:
+                logger.debug("[retention] Cannot prune folder %s: %s", folder, exc)
+    except OSError:
+        pass
 
 
 def _prune_log_files(channel_id: str, log_max: int) -> None:
@@ -153,9 +256,23 @@ def _run_retention_sync() -> None:
 
                 # Recording file retention
                 if config.retention.enabled:
-                    final_dir = resolve_channel_path(config.paths.final_dir)
                     max_age = config.retention.days * _SECONDS_PER_DAY
-                    total_deleted += _delete_old_recordings(final_dir, max_age)
+                    paths = config.paths
+
+                    if paths.effective_use_date_folders and paths.record_root:
+                        # Phase 23 — date-folder mode
+                        record_root = resolve_channel_path(paths.record_root)
+                        total_deleted += _delete_old_recordings_date_folders(
+                            ch.id, record_root, max_age
+                        )
+                    elif paths.final_dir:
+                        # Legacy mode — 3_final directory
+                        final_dir = resolve_channel_path(paths.final_dir)
+                        total_deleted += _delete_old_recordings(final_dir, max_age)
+                    else:
+                        logger.debug(
+                            "[retention][%s] No retention target configured — skipping.", ch.id
+                        )
                 else:
                     logger.debug(
                         "[retention][%s] Retention disabled — skipping.", ch.id

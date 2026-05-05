@@ -79,13 +79,25 @@ class Settings(BaseSettings):
     # Small buffer between stop and start during auto-restart.
     restart_pre_delay_seconds: float = 2.0
 
-    # File mover (1_record → 2_chunks)
+    # File mover (1_record → 2_chunks) — DEPRECATED: use segment_indexer instead.
+    # These settings are retained for backward compatibility with legacy channel
+    # configs that still use the 1_record/2_chunks pipeline.
     file_mover_interval_seconds: int = 30
     # A file must be at least this many seconds old before it is moved
     # (guards against moving a file FFmpeg is still writing)
     file_mover_min_age_seconds: int = 30
     # Phase 1.6 — double-check: time (seconds) between the two size reads
     file_mover_stability_check_seconds: float = 1.0
+
+    # Phase 23 — Segment Indexer (replaces file_mover for date-folder channels)
+    # How often the indexer runs (seconds).
+    segment_indexer_interval_seconds: int = 15
+    # A file must be at least this many seconds old before it is indexed.
+    segment_indexer_min_age_seconds: int = 30
+    # Time (seconds) between the two size reads for stability check.
+    segment_indexer_stability_check_seconds: float = 1.0
+    # Minimum ffprobe duration (seconds) — segments shorter than this are skipped.
+    segment_indexer_min_duration_seconds: float = 1.0
 
     # Retention cleaner
     retention_run_interval_seconds: int = 3600  # once per hour
@@ -328,3 +340,37 @@ def resolve_channel_path(path_str: str) -> Path:
         Path.cwd(),
     )
     return p.resolve()
+
+
+def resolve_date_folder(
+    record_root: str,
+    date_folder_format: str = "%Y_%m_%d",
+    date=None,
+) -> Path:
+    """
+    Resolve the date-based sub-folder path for a channel under *record_root*.
+
+    Returns ``{record_root}/{date_str}/`` where ``date_str`` is produced by
+    applying *date_folder_format* (strftime) to *date*.  When *date* is
+    ``None`` today's date is used.
+
+    The directory is **not** created here — call ``.mkdir(parents=True,
+    exist_ok=True)`` on the returned path if creation is needed.
+
+    Parameters
+    ----------
+    record_root : str
+        Channel recording root path (resolved via
+        :func:`resolve_channel_path`).
+    date_folder_format : str
+        strftime pattern for the sub-folder name (default ``"%Y_%m_%d"``).
+    date : datetime.date | None
+        Target date; uses today when ``None``.
+    """
+    import datetime as _dt
+
+    if date is None:
+        date = _dt.date.today()
+    folder_name = date.strftime(date_folder_format)
+    root = resolve_channel_path(record_root)
+    return root / folder_name

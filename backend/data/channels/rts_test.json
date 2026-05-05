@@ -42,6 +42,7 @@
     "filename_pattern": "%d%m%y-%H%M%S"
   },
   "paths": {
+    "record_root": "D:\\AutoRec\\record\\rts_test",
     "record_dir": "D:\\AutoRec\\record\\rts_test\\1_record",
     "chunks_dir": "D:\\AutoRec\\record\\rts_test\\2_chunks",
     "final_dir": "D:\\AutoRec\\record\\rts_test\\3_final"

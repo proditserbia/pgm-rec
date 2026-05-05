@@ -761,3 +761,140 @@ unlikely with strftime naming).  PGMRec renames the existing destination to
 If you see repeated warnings, check:
 - Are two recording processes writing to the same `1_record/` directory?
 - Is the `segment_filename_pattern` unique per channel?
+
+---
+
+## Recording Storage — Date-Folder Mode (Phase 23)
+
+### Overview
+
+From Phase 23 onwards, PGMRec supports a simpler, **date-folder** recording
+layout where FFmpeg writes segments directly into per-day sub-directories —
+**no file-move step**.
+
+```
+record/
+  rts1/
+    2026_04_05/
+      050426-120000.mp4
+      050426-120500.mp4
+      050426-121000.mp4
+    2026_04_06/
+      060426-000000.mp4
+      ...
+  rts2/
+    2026_04_05/
+      ...
+```
+
+### Why date folders?
+
+| Benefit | Details |
+|---------|---------|
+| **Easier manual browsing** | Open the channel root and navigate by date — no digging through `1_record/2_chunks/3_final` |
+| **Simpler manifest repair** | Re-scan a single date folder to rebuild the manifest |
+| **No move/copy risk** | Files are never moved; the path in the manifest is the file's final location |
+| **Fewer file-locking issues on Windows** | Eliminates races between the file_mover and other tools (antivirus, backup agents) |
+| **Smaller attack surface** | One storage stage instead of three |
+
+### Configuration
+
+Add `record_root` to the channel's `paths` block.  The legacy fields
+(`record_dir`, `chunks_dir`, `final_dir`) can coexist for backward
+compatibility but are **not** used when `record_root` is present.
+
+```json
+{
+  "paths": {
+    "record_root": "D:\\AutoRec\\record\\rts1"
+  }
+}
+```
+
+The date sub-folder name format is controlled by `date_folder_format`
+(default `%Y_%m_%d`):
+
+```json
+{
+  "paths": {
+    "record_root": "D:\\AutoRec\\record\\rts1",
+    "date_folder_format": "%Y_%m_%d"
+  }
+}
+```
+
+FFmpeg output pattern when `record_root` is set:
+
+```
+D:\AutoRec\record\rts1\%Y_%m_%d\%d%m%y-%H%M%S.mp4
+```
+
+### Segment Indexer
+
+The new `segment_indexer` service replaces `file_mover` for date-folder
+channels.  It runs every `PGMREC_SEGMENT_INDEXER_INTERVAL_SECONDS` seconds
+(default: 15) and:
+
+1. Scans date sub-folders under `record_root`.
+2. Identifies completed segments using:
+   - **Age guard** — file must be older than `PGMREC_SEGMENT_INDEXER_MIN_AGE_SECONDS` (default: 30s).
+   - **Size stability** — two size reads separated by `PGMREC_SEGMENT_INDEXER_STABILITY_CHECK_SECONDS` (default: 1.0s) must match.
+   - **ffprobe duration** — duration must be > `PGMREC_SEGMENT_INDEXER_MIN_DURATION_SECONDS` (default: 1.0s).
+   - **Active file guard** — the newest file in each folder is assumed to be actively written and is always skipped.
+3. Registers each qualifying, previously-unseen segment in the DB and JSON manifest.
+4. Pre-creates today's and tomorrow's date folders so FFmpeg can roll over at midnight.
+
+### Date-folder pre-creation
+
+FFmpeg's `stream_segment` muxer does **not** create intermediate directories.
+PGMRec pre-creates today's and tomorrow's folders:
+
+- On server startup (`_ensure_date_folders_on_startup`).
+- On every segment indexer run (near-midnight coverage).
+
+Manual pre-creation is also possible:
+
+```python
+from app.services.ffmpeg_builder import ensure_date_folders
+from app.models.schemas import ChannelConfig
+ensure_date_folders(config)
+```
+
+### Retention
+
+Retention now operates on date folders:
+
+- Old `*.mp4` files in date sub-folders are deleted when their age exceeds `retention.days`.
+- `never_expires` segments (set via the API) are never deleted.
+- Empty date folders are pruned after their contents are removed.
+
+### Backward compatibility (legacy 1_record/2_chunks mode)
+
+Channels that only have `record_dir` / `chunks_dir` / `final_dir` continue to
+work exactly as before using the `file_mover` + three-stage pipeline.
+
+A startup **WARNING** is logged for each legacy channel:
+
+```
+Channel 'rts1': legacy 1_record/2_chunks mode detected (paths.record_dir=...).
+Prefer paths.record_root with date folders.
+```
+
+### Migration from legacy layout
+
+1. Stop recording for the channel.
+2. Add `record_root` to the channel's `paths` block in the JSON config or via the API.
+3. Optionally keep `record_dir` / `chunks_dir` / `final_dir` (they are harmless).
+4. Reload the channel config: `POST /api/v1/channels/{id}/reload-config`.
+5. Start recording again — FFmpeg will now write into date sub-folders.
+6. Existing segments in `2_chunks/` or `3_final/` can be manually copied/moved
+   to date folders and re-indexed by calling `segment_indexer.run_segment_indexer()`.
+
+### New environment variables (Phase 23)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PGMREC_SEGMENT_INDEXER_INTERVAL_SECONDS` | `15` | How often the indexer runs |
+| `PGMREC_SEGMENT_INDEXER_MIN_AGE_SECONDS` | `30` | Minimum file age before indexing |
+| `PGMREC_SEGMENT_INDEXER_STABILITY_CHECK_SECONDS` | `1.0` | Size-stability double-read interval |
+| `PGMREC_SEGMENT_INDEXER_MIN_DURATION_SECONDS` | `1.0` | Minimum ffprobe duration to accept |

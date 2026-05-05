@@ -1,12 +1,25 @@
 """
-Recording Manifest Service — Phase 2A.
+Recording Manifest Service — Phase 2A / Phase 23.
 
 Implements the ACTUS-inspired JSON manifest layer for PGMRec.
 
 Architecture
 ────────────
-Every time the file_mover promotes a completed segment from
-``1_record`` → ``2_chunks``, this service:
+Phase 23 (date-folder mode — preferred):
+    The ``segment_indexer`` service periodically scans date sub-folders under
+    ``paths.record_root`` and calls :func:`register_segment` directly for
+    each completed segment.  No file-move step occurs — segments remain at
+    their original location:
+
+        {record_root}/{YYYY_MM_DD}/{filename}.mp4
+
+Legacy (1_record / 2_chunks pipeline):
+    Every time the file_mover promotes a completed segment from
+    ``1_record`` → ``2_chunks``, this service is called with the destination
+    path in ``2_chunks``.  The segment path stored in the manifest and DB
+    points to the ``2_chunks`` location.
+
+In both cases this service:
 
 1. Parses the segment start time from the filename (using the channel's
    configured strftime pattern and IANA timezone).

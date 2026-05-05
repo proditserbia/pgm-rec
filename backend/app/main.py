@@ -45,6 +45,7 @@ from .services.auth_service import create_user, get_user_by_username
 from .services.export_retention import run_export_retention
 from .services.export_worker import get_export_worker
 from .services.file_mover import run_file_mover
+from .services.segment_indexer import run_segment_indexer
 from .services.preview_manager import run_preview_watchdog_loop as _mjpeg_watchdog_loop
 from .services.hls_preview_manager import run_hls_preview_watchdog_loop
 from .services.process_manager import get_process_manager
@@ -336,6 +337,61 @@ def _reconcile_stale_exports(db) -> None:
     )
 
 
+def _ensure_date_folders_on_startup(db) -> None:
+    """
+    Phase 23 — pre-create today's and tomorrow's date sub-folders for all
+    enabled channels that use date-folder mode.
+
+    FFmpeg's ``stream_segment`` muxer does not create intermediate directories,
+    so the date folder must already exist when recording starts.
+    """
+    from .services.ffmpeg_builder import ensure_date_folders
+
+    channels = db.query(Channel).filter(Channel.enabled.is_(True)).all()
+    for ch in channels:
+        try:
+            config = ChannelConfig.model_validate_json(ch.config_json)
+            if config.paths.effective_use_date_folders:
+                created = ensure_date_folders(config)
+                if created:
+                    logger.info(
+                        "Phase 23: pre-created date folder(s) for channel '%s': %s",
+                        ch.id,
+                        [str(p) for p in created],
+                    )
+        except Exception:
+            logger.exception(
+                "Phase 23: could not pre-create date folders for channel '%s'.", ch.id
+            )
+
+
+def _warn_legacy_paths(db) -> None:
+    """
+    Phase 23 — log a WARNING for any channel that still uses the legacy
+    ``record_dir`` / ``chunks_dir`` pipeline rather than the new
+    ``record_root`` date-folder mode.
+    """
+    channels = db.query(Channel).filter(Channel.enabled.is_(True)).all()
+    for ch in channels:
+        try:
+            config = ChannelConfig.model_validate_json(ch.config_json)
+            if (
+                config.paths.record_dir is not None
+                or config.paths.chunks_dir is not None
+            ) and not config.paths.effective_use_date_folders:
+                logger.warning(
+                    "Channel '%s': legacy 1_record/2_chunks mode detected "
+                    "(paths.record_dir=%r, paths.chunks_dir=%r). "
+                    "Prefer paths.record_root with date folders. "
+                    "See README for migration instructions.",
+                    ch.id,
+                    config.paths.record_dir,
+                    config.paths.chunks_dir,
+                )
+        except Exception:
+            pass
+
+
 # ─── Application lifecycle ────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -392,6 +448,15 @@ async def lifespan(app: FastAPI):
     with SessionLocal() as db:
         get_process_manager().reconcile_on_startup(db)
 
+    # Phase 23 — Pre-create today's + tomorrow's date folders for all channels
+    # using date-folder mode so FFmpeg can start immediately.
+    with SessionLocal() as db:
+        _ensure_date_folders_on_startup(db)
+
+    # Phase 23 — Warn for legacy 1_record/2_chunks channels
+    with SessionLocal() as db:
+        _warn_legacy_paths(db)
+
     # ── Watchdog — independent asyncio Task ───────────────────────────────
     # Runs its own interval loop, completely decoupled from the shared
     # scheduler, so it is never delayed by file_mover or retention work.
@@ -411,8 +476,16 @@ async def lifespan(app: FastAPI):
     export_worker = get_export_worker()
     export_worker.start()
 
-    # ── Shared scheduler: file mover + retention ─────────────────────────
+    # ── Shared scheduler: segment_indexer + file_mover (legacy) + retention ─
     scheduler = get_scheduler()
+    # Phase 23: segment_indexer handles date-folder channels.
+    scheduler.add(
+        "segment_indexer",
+        settings.segment_indexer_interval_seconds,
+        run_segment_indexer,
+    )
+    # Legacy file_mover kept for backward-compat with 1_record/2_chunks channels.
+    # It self-skips channels that already use record_root.
     scheduler.add(
         "file_mover",
         settings.file_mover_interval_seconds,
