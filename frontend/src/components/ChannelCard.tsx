@@ -12,9 +12,40 @@ import HlsPlayer from './HlsPlayer'
 
 const TZ = 'Europe/Belgrade'
 
+const CHANNEL_SUFFIXES = [
+  ' - PRVI PROGRAM',
+  ' - DRUGI PROGRAM',
+  ' - TRECI PROGRAM',
+  ' - TEST PROGRAM',
+]
+
+const CHANNEL_SUFFIXES_UPPER = CHANNEL_SUFFIXES.map(s => s.toUpperCase())
+
+function stripChannelSuffix(name: string): string {
+  const upper = name.toUpperCase()
+  for (let i = 0; i < CHANNEL_SUFFIXES_UPPER.length; i++) {
+    if (upper.endsWith(CHANNEL_SUFFIXES_UPPER[i])) {
+      return name.slice(0, name.length - CHANNEL_SUFFIXES[i].length)
+    }
+  }
+  return name
+}
+
 function fmtDate(iso: string | null) {
   if (!iso) return '—'
   return new Date(iso).toLocaleString('en-GB', { timeZone: TZ, hour12: false })
+}
+
+function fmtUptime(lastRestartTime: string | null): string | null {
+  if (!lastRestartTime) return null
+  const secs = Math.floor((Date.now() - new Date(lastRestartTime).getTime()) / 1000)
+  if (secs < 0) return null
+  const h = Math.floor(secs / 3600)
+  const m = Math.floor((secs % 3600) / 60)
+  const s = secs % 60
+  if (h > 0) return `${h}h ${m}m`
+  if (m > 0) return `${m}m ${s}s`
+  return `${s}s`
 }
 
 function CooldownTimer({ seconds }: { seconds: number }) {
@@ -60,24 +91,26 @@ export default function ChannelCard({ ch, dbg, busy, isAdmin, onStart, onStop, o
     : isCooldown ? 'dot-starting'
     : 'dot-stopped'
 
-  const liveLabel = isRunning
-    ? isAlert ? 'ALERT' : isCooldown ? 'COOLDOWN' : 'LIVE'
-    : ch.status.toUpperCase()
+  const statusLabel = isRunning
+    ? isAlert ? 'DEGRADED' : isCooldown ? 'COOLDOWN' : 'RECORDING'
+    : isStopped ? 'STOPPED' : ch.status.toUpperCase()
 
-  const liveLabelCls = isRunning && !isAlert && !isCooldown
+  const statusLabelCls = isRunning && !isAlert && !isCooldown
     ? 'label-running'
     : isAlert ? 'label-failed'
     : isCooldown ? 'label-starting'
     : 'label-stopped'
+
+  const displayName = stripChannelSuffix(ch.display_name)
+  const uptime = isRunning ? fmtUptime(dbg?.last_restart_time ?? null) : null
 
   return (
     <div className={cardCls}>
       {/* ── Header ── */}
       <div className="ch-header">
         <span className={`monitor-live-dot ${dotCls}`} />
-        <span className={`monitor-live-label ${liveLabelCls}`}>{liveLabel}</span>
-        <span className="ch-title">{ch.display_name}</span>
-        <HealthBadge health={ch.health} />
+        <span className={`monitor-live-label ${statusLabelCls}`}>{statusLabel}</span>
+        <span className="ch-title">{displayName}</span>
         <span className="ch-id">{ch.id}</span>
       </div>
 
@@ -106,6 +139,14 @@ export default function ChannelCard({ ch, dbg, busy, isAdmin, onStart, onStop, o
             }
           </div>
         )}
+
+        {/* Compact status row */}
+        <div className="ch-status-row">
+          <HealthBadge health={ch.health} />
+          {uptime && (
+            <span className="ch-uptime">↑ {uptime}</span>
+          )}
+        </div>
 
         <div className="ch-meta-row">
           <span className="ch-meta-label">Last segment</span>
