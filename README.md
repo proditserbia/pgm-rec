@@ -868,6 +868,139 @@ Retention now operates on date folders:
 - `never_expires` segments (set via the API) are never deleted.
 - Empty date folders are pruned after their contents are removed.
 
+---
+
+## Recording Retention (Phase 25)
+
+PGMRec automatically deletes old raw recording segments to prevent disks from
+filling up.  This replaces the legacy `del_rts1.bat` behaviour.
+
+### How it works
+
+The retention scheduler runs every `PGMREC_RETENTION_RUN_INTERVAL_SECONDS`
+(default 1 hour).  For each channel it:
+
+1. Resolves "today" in the **channel timezone** (default `Europe/Belgrade`).
+2. Computes the cutoff date: `today − retention.days`.
+3. For each date folder under `record_root`:
+   - **Skips** if the folder name is ≥ today (current/future — never touched).
+   - **Skips** if the folder date ≥ cutoff (within retention window).
+   - **Deletes** `*.mp4` files in eligible folders, unless `never_expires=true`.
+4. Prunes empty date folders after deletion.
+
+> ⚠️ Only date-named folders (format `%Y_%m_%d`) are touched.  Any folder whose
+> name cannot be parsed as a date is silently skipped — `archive/` or
+> `export/` folders are safe.
+
+### What is NOT deleted
+
+| Item | Protected? |
+|------|-----------|
+| Daily archive files | ✅ Always |
+| Manual export files | ✅ Always |
+| Manifest JSON files | ✅ Always |
+| DB records (SegmentRecord) | ✅ Always — only marked |
+| HLS preview files | ✅ Always |
+| Segments with `never_expires=true` | ✅ Always |
+| Today's date folder | ✅ Always |
+
+### Configuration
+
+#### Global environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PGMREC_RECORDING_RETENTION_ENABLED` | `true` | Master switch — set to `false` to disable all raw segment cleanup |
+| `PGMREC_RECORDING_RETENTION_DAYS` | `30` | Global default retention period (days) |
+| `PGMREC_RETENTION_RUN_INTERVAL_SECONDS` | `3600` | How often the cleanup scheduler runs (seconds) |
+| `PGMREC_PRUNE_SEGMENT_DB_AFTER_DELETE` | `false` | When `true`, marks deleted files in DB (`file_exists=false`, `deleted_at=<timestamp>`) |
+
+#### Per-channel config (channel JSON)
+
+```json
+"retention": {
+  "enabled": true,
+  "days": 30
+}
+```
+
+Per-channel `days` takes priority over the global default.  Set to `0` to
+effectively disable deletion for that channel (no files will be old enough).
+
+#### Example: 30 / 60 / 90-day retention
+
+```env
+# .env — 60-day default for all channels
+PGMREC_RECORDING_RETENTION_DAYS=60
+```
+
+Or per-channel in `data/channels/rts1.json`:
+
+```json
+"retention": { "enabled": true, "days": 90 }
+```
+
+### Raw recording retention vs daily archive retention
+
+| | Raw Segments | Daily Archive |
+|--|--|--|
+| **Location** | `record_root/YYYY_MM_DD/*.mp4` | `record_root/archive/` or `final_dir/` |
+| **Controlled by** | `retention.days` / `PGMREC_RECORDING_RETENTION_DAYS` | `PGMREC_EXPORT_RETENTION_DAYS` |
+| **Default** | 30 days | 30 days |
+| **DB records removed** | Never (only marked) | Export job rows kept |
+
+### Dry-run endpoint
+
+Before enabling deletion you can preview exactly what would be removed:
+
+```http
+POST /api/v1/retention/run
+Authorization: Bearer <admin-token>
+Content-Type: application/json
+
+{
+  "dry_run": true
+}
+```
+
+Response:
+
+```json
+{
+  "dry_run": true,
+  "executed": false,
+  "channels": [
+    {
+      "channel_id": "rts1",
+      "skipped": false,
+      "files_deleted": 42,
+      "folders_deleted": 3,
+      "total_bytes": 184320000,
+      "files_to_delete": ["D:\\AutoRec\\record\\rts1\\2026_03_05\\seg001.mp4", "..."],
+      "folders_to_delete": ["D:\\AutoRec\\record\\rts1\\2026_03_05"]
+    }
+  ],
+  "total_files_deleted": 42,
+  "total_folders_deleted": 3,
+  "total_bytes": 184320000
+}
+```
+
+To actually delete, set `"dry_run": false`:
+
+```json
+{ "dry_run": false }
+```
+
+Or limit to a single channel:
+
+```json
+{ "channel_id": "rts1", "dry_run": false }
+```
+
+> ⚠️ **Warning**: live runs permanently delete recording files.  Always
+> perform a dry run first and verify the list before enabling live deletion.
+
 ### Backward compatibility (legacy 1_record/2_chunks mode)
 
 Channels that only have `record_dir` / `chunks_dir` / `final_dir` continue to

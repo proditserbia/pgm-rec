@@ -745,6 +745,55 @@ class DiskUsageResponse(BaseModel):
     percent_used: float
 
 
+# ─── Recording Retention — Phase 25 ─────────────────────────────────────────
+
+class RetentionRunRequest(BaseModel):
+    """
+    Request body for POST /api/v1/retention/run.
+
+    channel_id: specific channel to clean up; None = run for all channels.
+    dry_run: when True, return what *would* be deleted without actually deleting.
+    """
+
+    channel_id: Optional[str] = None
+    dry_run: bool = True
+
+
+class RetentionChannelResult(BaseModel):
+    """
+    Retention result for a single channel.
+
+    Included in RetentionRunResponse.channels.
+    """
+
+    channel_id: str
+    skipped: bool = False
+    skip_reason: Optional[str] = None
+    files_deleted: int = 0
+    folders_deleted: int = 0
+    total_bytes: int = 0
+    # Paths that were (or would be) deleted — populated in both dry_run and live modes.
+    files_to_delete: list[str] = Field(default_factory=list)
+    folders_to_delete: list[str] = Field(default_factory=list)
+
+
+class RetentionRunResponse(BaseModel):
+    """
+    Response body for POST /api/v1/retention/run.
+
+    dry_run=True  → executed=False: files_to_delete/folders_to_delete are populated
+                   but nothing was actually deleted.
+    dry_run=False → executed=True: deletion was performed; counts reflect actuals.
+    """
+
+    dry_run: bool
+    executed: bool
+    channels: list[RetentionChannelResult] = Field(default_factory=list)
+    total_files_deleted: int = 0
+    total_folders_deleted: int = 0
+    total_bytes: int = 0
+
+
 # ─── System config — Phase 8 ─────────────────────────────────────────────────
 
 class SystemConfigResponse(BaseModel):

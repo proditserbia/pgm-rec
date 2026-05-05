@@ -59,6 +59,7 @@ from .api.v1 import exports as exports_router
 from .api.v1 import manifests as manifests_router
 from .api.v1 import monitoring as monitoring_router
 from .api.v1 import preview as preview_router
+from .api.v1 import retention as retention_router
 from .api.v1 import system as system_router
 
 logging.basicConfig(
@@ -563,6 +564,7 @@ def create_app() -> FastAPI:
     app.include_router(preview_router.router, prefix="/api/v1")
     app.include_router(manifests_router.router, prefix="/api/v1")
     app.include_router(exports_router.router, prefix="/api/v1")
+    app.include_router(retention_router.router, prefix="/api/v1")
     app.include_router(system_router.router, prefix="/api/v1")
 
     @app.get("/health", tags=["system"])

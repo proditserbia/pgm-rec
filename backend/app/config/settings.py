@@ -126,6 +126,22 @@ class Settings(BaseSettings):
     # Override output directory for all channels.  Empty = auto-detect per channel.
     daily_archive_dir: str = ""
 
+    # Phase 25 — Recording Retention Cleanup (raw segment files)
+    # When True (default), the retention scheduler will delete old raw recording
+    # segment files from date-folder channels (and legacy 3_final channels).
+    # This is separate from export retention (export_retention_days).
+    # Set to False to globally disable all recording segment deletion.
+    recording_retention_enabled: bool = True
+    # Global default retention period for raw recording segments (days).
+    # Per-channel ``retention.days`` in the channel JSON config always takes
+    # priority over this setting.  This acts as a system-wide fallback.
+    recording_retention_days: int = 30
+    # Phase 25 — when True, deleted segment files are also marked in the DB:
+    #   SegmentRecord.file_exists = False, SegmentRecord.deleted_at = <now>
+    # Manifests and SegmentRecord rows are never physically removed; only the
+    # two new marker columns are updated so the audit trail is preserved.
+    prune_segment_db_after_delete: bool = False
+
     # Retention cleaner
     retention_run_interval_seconds: int = 3600  # once per hour
 

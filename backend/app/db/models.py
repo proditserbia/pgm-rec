@@ -156,6 +156,11 @@ class SegmentRecord(Base):
     never_expires: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     has_freeze: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     has_silence: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Phase 25 — recording retention markers (file is never removed from DB)
+    # file_exists=False means the segment file was deleted by the retention cleaner.
+    file_exists: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Timestamp when the file was deleted (UTC); None = file has not been deleted.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     channel: Mapped["Channel"] = relationship(back_populates="segment_records")
 
