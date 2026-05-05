@@ -423,7 +423,7 @@ async def _archive_channel(
 def _build_log_path(settings, channel_id: str, target_date_str: str) -> Path:
     """Return the log file path for a daily archive job."""
     # Use a timestamp suffix to avoid collisions on retry
-    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     folder = settings.export_logs_dir / channel_id / "archive"
     folder.mkdir(parents=True, exist_ok=True)
     return folder / f"daily_archive_{target_date_str}_{ts}.log"
