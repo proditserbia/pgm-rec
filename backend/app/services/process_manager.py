@@ -552,8 +552,8 @@ class ProcessManager:
         - When ``recording_preview_output.mode == "hls_direct"``, the preview
           output directory must be creatable.
         """
-        from .ffmpeg_builder import _output_pattern as _op
-        from pathlib import Path as _Path
+        from .ffmpeg_builder import _output_pattern
+        from pathlib import Path
 
         paths = config.paths
 
@@ -565,7 +565,7 @@ class ProcessManager:
                 "Set a valid path to the ffmpeg binary in the channel config."
             )
         # Only validate if the value looks like a full path (contains a separator)
-        if (_Path(ffmpeg).parent != _Path(".")) and not _Path(ffmpeg).is_file():
+        if (Path(ffmpeg).parent != Path(".")) and not Path(ffmpeg).is_file():
             raise ValueError(
                 f"[{channel_id}] ffmpeg binary not found at '{ffmpeg}'. "
                 "Check the ffmpeg_path setting in the channel config."
@@ -600,7 +600,7 @@ class ProcessManager:
         # Legacy mode (record_dir set) does not use this pattern builder.
         if paths.effective_use_date_folders:
             try:
-                pattern = _op(config)
+                pattern = _output_pattern(config)
             except Exception as exc:
                 raise ValueError(
                     f"[{channel_id}] Failed to build FFmpeg output path pattern: {exc}"
