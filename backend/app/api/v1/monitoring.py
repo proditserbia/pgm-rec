@@ -6,13 +6,14 @@ Endpoints:
   GET /api/v1/channels/{id}/anomalies     segment anomaly history
   GET /api/v1/channels/{id}/debug         detailed real-time diagnostics (Phase 1.6)
   GET /api/v1/system/health               aggregated health of all channels
-  GET /api/v1/system/disk                 disk usage for the data directory (Phase 3.5)
+  GET /api/v1/system/disk                 disk usage for the recording storage (Phase 3.5)
 """
 from __future__ import annotations
 
 import shutil
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -232,13 +233,13 @@ def get_disk_usage(_: AnyRoleDep) -> DiskUsageResponse:
     exist, PGMRec attempts to create it.  If creation fails, the response
     includes a ``warning`` field and falls back to ``data_dir``.
     """
-    from pathlib import Path as _Path
-
     settings = get_settings()
     warning: str | None = None
+    disk_path: str
 
     if settings.recording_root is not None:
-        rec_root = _Path(settings.recording_root)
+        rec_root = Path(settings.recording_root)
+        created_or_exists = True
         if not rec_root.exists():
             try:
                 rec_root.mkdir(parents=True, exist_ok=True)
@@ -248,8 +249,8 @@ def get_disk_usage(_: AnyRoleDep) -> DiskUsageResponse:
                     f"could not be created: {exc}. Disk usage reported for "
                     f"'{settings.data_dir}' instead."
                 )
-                rec_root = None  # type: ignore[assignment]
-        disk_path = str(rec_root) if rec_root is not None else str(settings.data_dir)
+                created_or_exists = False
+        disk_path = str(rec_root) if created_or_exists else str(settings.data_dir)
     else:
         disk_path = str(settings.data_dir)
 
