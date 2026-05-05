@@ -45,7 +45,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import date as _date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -93,7 +93,7 @@ class _RetentionResult:
 
 # ─── Timezone helper ──────────────────────────────────────────────────────────
 
-def _get_local_today(tz_name: str) -> _date:
+def _get_local_today(tz_name: str) -> date:
     """Return today's date in *tz_name* (falls back to UTC on error)."""
     try:
         from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -164,7 +164,7 @@ def _mark_segments_deleted_in_db(channel_id: str, filenames: list[str]) -> None:
 
 # ─── Date-folder helpers ──────────────────────────────────────────────────────
 
-def _parse_folder_date(folder: Path, date_folder_format: str) -> Optional[_date]:
+def _parse_folder_date(folder: Path, date_folder_format: str) -> Optional[date]:
     """
     Parse a date-folder name using *date_folder_format*.
 
@@ -390,8 +390,8 @@ def _prune_empty_date_folders_result(record_root: Path, result: _RetentionResult
 
 def _collect_empty_date_folders(
     record_root: Path,
-    today: _date,
-    cutoff: _date,
+    today: date,
+    cutoff: date,
     date_folder_format: str,
     result: _RetentionResult,
 ) -> None:
